@@ -15,12 +15,25 @@ The entire agent/tool/RAG/routing/eval/scale path runs **fully offline** with `P
 (no network, key, or SDK). Live paths add OpenAI or Groq. There is no build step; everything is
 Python 3 plus a small browser client.
 
+**The mission:** grow this into a production-grade, deployable voice reservation service. The
+approved roadmap lives in `goal.md` (4 phases, 11 ADRs, per-phase definitions of done) — it is
+**local-only** (gitignored, not in the remote); if it's missing, ask the user for it before
+starting roadmap work. Every session should advance a roadmap item, not wander.
+
 ## Commands
 
-Two independent Python packages, each with its own venv and `requirements.txt`: `pipeline/`
-(the agent + voice loop) and `livekit/` (the browser room demo). Run commands from the relevant
-subdirectory. This repo's other assignments use `uv`; here the docs use `python3 -m venv`, but
-`uv venv` + `uv pip install -r requirements.txt` at each package works equally.
+Two Python packages — `pipeline/` (the agent + voice loop) and `livekit/` (the browser room
+demo) — share **one venv at the assignment root** (their dependency sets are disjoint except for
+an identical `openai` pin). Create/recreate it with:
+
+```bash
+uv venv --python 3.12
+source .venv/bin/activate
+uv pip install -r pipeline/requirements.txt -r livekit/requirements.txt
+```
+
+Run commands from the relevant subdirectory with the root `.venv` active. (README/RUNBOOK still
+describe per-package `python3 -m venv` setups — that also works, but the root venv is canonical.)
 
 **Offline verification (no key required) — run these after any change to the agent, tools, router, RAG, or telemetry:**
 ```bash
@@ -122,19 +135,36 @@ through the real `Agent` on the mock provider, asserting expected `tools`, `acti
 `sourceContains`, `contains`, and `forbid` text. Add a red-team case *before* changing prompts or
 tools so behavior changes have an explicit acceptance criterion.
 
-## Workflow skills (mandatory)
+## How to work: the goal loop (mandatory)
 
-Project skills in `.claude/skills/` enforce the goal.md roadmap — use them, in this order:
+Four project skills in `.claude/skills/` turn the goal.md roadmap into a working discipline.
+Every task follows this loop — the skills are the steps, in this order:
 
-- **`roadmap-guard`** — at the start of any feature/task: map it to a goal.md phase item; flag
-  off-plan work instead of silently building it. At completion: check the phase's definition of
-  done and mark progress in goal.md.
-- **`edd`** — for ANY agent-behavior change (prompt, tools, guardrails, routing, knowledge,
-  MockProvider): write the eval FIRST, prove it fails, enforce mock parity, then implement.
-  Never weaken an existing eval to make it pass.
-- **`gates`** — run all four offline suites before every commit; report real output.
-- **`adr`** — record significant technical decisions in goal.md §5 format; never silently
-  contradict an existing ADR.
+```
+1. ORIENT   roadmap-guard  →  map the task to a goal.md phase item ("📍 Phase X.Y — …");
+                              off-plan work gets flagged: amend the plan or defer, never
+                              silently build it. Respect phase order; make skips explicit.
+2. DECIDE   adr            →  if the task involves a significant technical choice (new
+                              dependency, schema, interface, deviation from an ADR),
+                              record ADR-012+ in goal.md §5 BEFORE building on it.
+3. BUILD    edd            →  for ANY agent-behavior change (prompt, TOOLS, run_tool,
+                              guardrails, routing, knowledge/, MockProvider): write the
+                              eval FIRST, run it, prove it FAILS, then mock parity, then
+                              the live path, then green. Pure refactors skip to step 4.
+4. VERIFY   gates          →  all four offline suites, per-gate results with real output.
+                              Red gates = not done. Never claim otherwise.
+5. CLOSE    roadmap-guard  →  check the item against its phase's acceptance criteria
+                              (goal.md §4/§7), mark it done in goal.md with a date,
+                              then commit (short single-line message) and push.
+```
+
+Standing rules that override convenience:
+- **Never weaken, delete, or loosen an eval to make it pass** — changed acceptance criteria are
+  a product decision for the user.
+- **Never write the eval after the implementation and call it EDD.**
+- **Never silently contradict an ADR** — supersede it explicitly via the `adr` skill.
+- Work the phases in order (Phase 1 → 4). The next open item in goal.md §4 is the default
+  "what should we do next" answer.
 
 ## Conventions
 
