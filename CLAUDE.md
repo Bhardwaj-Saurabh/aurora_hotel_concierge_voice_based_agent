@@ -122,6 +122,20 @@ through the real `Agent` on the mock provider, asserting expected `tools`, `acti
 `sourceContains`, `contains`, and `forbid` text. Add a red-team case *before* changing prompts or
 tools so behavior changes have an explicit acceptance criterion.
 
+## Workflow skills (mandatory)
+
+Project skills in `.claude/skills/` enforce the goal.md roadmap — use them, in this order:
+
+- **`roadmap-guard`** — at the start of any feature/task: map it to a goal.md phase item; flag
+  off-plan work instead of silently building it. At completion: check the phase's definition of
+  done and mark progress in goal.md.
+- **`edd`** — for ANY agent-behavior change (prompt, tools, guardrails, routing, knowledge,
+  MockProvider): write the eval FIRST, prove it fails, enforce mock parity, then implement.
+  Never weaken an existing eval to make it pass.
+- **`gates`** — run all four offline suites before every commit; report real output.
+- **`adr`** — record significant technical decisions in goal.md §5 format; never silently
+  contradict an existing ADR.
+
 ## Conventions
 
 - **Faithful reporting:** if smoke_test / unittest / evals fail, say so with the output; don't

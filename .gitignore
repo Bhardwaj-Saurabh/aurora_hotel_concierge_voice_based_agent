@@ -1,4 +1,5 @@
 .DS_Store
+.venv/
 pipeline/.env
 pipeline/.venv/
 livekit/.venv/
@@ -11,3 +12,4 @@ logs/*.jsonl
 
 
 LEARNING_GUIDE.md
+goal.md
