@@ -334,6 +334,12 @@ def _mock_knowledge_request(text: str) -> bool:
 def _mock_off_topic(text: str) -> bool:
     return any(word in text for word in (
         "weather", "news", "sports", "stock", "joke", "trivia", "clima", "noticias",
+        # Medical / legal / financial advice stays out of scope (mirrors SYSTEM_PROMPT).
+        # "taxes" not "tax" (substring would catch "taxi").
+        "medical", "medication", "medicine", "doctor", "diagnosis", "symptom",
+        "legal", "lawyer", "attorney", "sue the", "lawsuit", "loan", "mortgage",
+        "invest", "crypto", "taxes", "médico", "medicamento", "abogado", "demanda",
+        "préstamo", "prestamo", "invertir", "impuestos",
     ))
 
 
