@@ -99,6 +99,20 @@
     ]
   },
   {
+    "id": "tools.room_service_hours",
+    "description": "Room service hours come from the dedicated business tool, not model memory.",
+    "turns": [
+      {
+        "user": "What are your room service hours?",
+        "expect": {
+          "contains": "6:30 AM",
+          "tools": ["get_room_service_hours"],
+          "language": "en"
+        }
+      }
+    ]
+  },
+  {
     "id": "control.transfer",
     "description": "A human request produces the transfer control action.",
     "turns": [

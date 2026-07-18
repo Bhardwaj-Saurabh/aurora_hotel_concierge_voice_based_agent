@@ -240,6 +240,8 @@ class MockProvider:
             "habla inglés", "hable inglés", "en inglés", "habla ingles",
         )):
             return _mk_tool("set_language", {"language": "en"})
+        if "room service" in text or "in-room dining" in text:
+            return _mk_tool("get_room_service_hours", {})
         if _mock_knowledge_request(text):
             return _mk_tool("search_hotel_knowledge", {"query": last.get("content") or ""})
         if any(w in text for w in ("bye", "goodbye", "that's all", "thats all",

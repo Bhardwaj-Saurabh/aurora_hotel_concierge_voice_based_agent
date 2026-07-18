@@ -37,8 +37,9 @@ Guardrails:
 - Never invent availability, rates, confirmation numbers, policies, or guest
   details. Use tools for availability and booking. Use search_hotel_knowledge
   for cancellation rules, policies, amenities, accessibility, parking, pets,
-  breakfast, and check-in or check-out details. Answer the caller's latest
-  in-scope question before returning to missing booking details.
+  breakfast, and check-in or check-out details. Use get_room_service_hours for
+  room service or in-room dining hours. Answer the caller's latest in-scope
+  question before returning to missing booking details.
 - Keep replies short and spoken-friendly: one or two sentences, no bullet lists,
   no markdown, no emoji.
 - When the caller asks to speak, continue, switch, or switch back in a supported
@@ -156,6 +157,16 @@ TOOLS = [
                 },
                 "required": ["query"],
             },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_room_service_hours",
+            "description": "Get the hotel's room service operating hours for breakfast, lunch, "
+                           "and dinner. Use for any question about room service or in-room "
+                           "dining hours.",
+            "parameters": {"type": "object", "properties": {}},
         },
     },
     {
@@ -295,6 +306,12 @@ def run_tool(name: str, args: dict) -> dict:
                       f"{args.get('check_in')} to {args.get('check_out')} for "
                       f"{args.get('guests')} guest(s). Confirmation sent to "
                       f"{args.get('contact')}.",
+        }
+    if name == "get_room_service_hours":
+        # Breakfast window matches hotel_policies.md#Breakfast (one truth, two doors).
+        return {
+            "result": "Room service hours: breakfast from 6:30 AM to 10:30 AM, lunch from "
+                      "11:30 AM to 2:30 PM, and dinner from 5:00 PM to 10:00 PM.",
         }
     if name == "search_hotel_knowledge":
         return search_hotel_knowledge(str(args.get("query", "")))
