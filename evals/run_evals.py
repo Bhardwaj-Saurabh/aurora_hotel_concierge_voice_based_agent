@@ -17,6 +17,7 @@ os.environ["PROVIDER"] = "mock"
 os.environ.setdefault("TTS_BACKEND", "print")
 
 from agent import Agent  # noqa: E402
+from bookings import reset_booking_backend  # noqa: E402
 from providers import make_provider  # noqa: E402
 from telemetry import TurnTrace  # noqa: E402
 
@@ -54,6 +55,7 @@ def _check(expect: dict, reply: str, action: str | None, trace: dict) -> list[st
 
 
 def run_case(case: dict, verbose: bool = False) -> tuple[bool, list[str]]:
+    reset_booking_backend()  # hermetic cases: confirmation sequence restarts per scenario
     agent = Agent(make_provider("mock"))
     failures: list[str] = []
     for index, turn in enumerate(case["turns"], start=1):

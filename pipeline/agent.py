@@ -18,6 +18,12 @@ import re
 import unicodedata
 from difflib import SequenceMatcher
 
+from bookings import (
+    ROOMS as _ROOMS,
+    BookingValidationError,
+    get_booking_backend,
+    normalize_room_type as _normalize_room_type,
+)
 from knowledge import search_hotel_knowledge
 from providers import Provider
 from router import AgentRouter, LANGUAGES
@@ -257,32 +263,10 @@ def _named_tool_choice(name: str) -> dict:
     return {"type": "function", "function": {"name": name}}
 
 
-# --- Mock tool implementations (swap for real backends in production) ---
-
-_ROOMS = {
-    "standard": {"name": "Standard Queen", "rate": "$189/night", "capacity": 2},
-    "king": {"name": "Deluxe King", "rate": "$229/night", "capacity": 2},
-    "suite": {"name": "Harbor Suite", "rate": "$329/night", "capacity": 4},
-    "family": {"name": "Family Double Queen", "rate": "$269/night", "capacity": 5},
-    "accessible": {"name": "Accessible Queen", "rate": "$199/night", "capacity": 2},
-}
+# --- Tool implementations (availability is mock; bookings persist via bookings.py) ---
 
 
-def _normalize_room_type(value: str | None) -> str | None:
-    room_type = (value or "").strip().lower()
-    if not room_type:
-        return None
-    for key in _ROOMS:
-        if key in room_type:
-            return key
-    if "double" in room_type:
-        return "family"
-    if "queen" in room_type:
-        return "standard"
-    return None
-
-
-def run_tool(name: str, args: dict) -> dict:
+def run_tool(name: str, args: dict, session_id: str = "") -> dict:
     """Execute a tool call. The optional 'action' key is a control signal for
     the voice loop ('transfer' -> SIP REFER, 'hangup' -> SIP BYE)."""
     if name == "check_availability":
@@ -305,14 +289,35 @@ def run_tool(name: str, args: dict) -> dict:
                       f"{'; '.join(rooms)}.",
         }
     if name == "create_booking":
-        room_key = _normalize_room_type(args.get("room_type")) or "standard"
-        room = _ROOMS[room_key]
+        try:
+            record = get_booking_backend().create_booking(
+                session_id=session_id,
+                check_in=str(args.get("check_in", "")),
+                check_out=str(args.get("check_out", "")),
+                guests=args.get("guests", 0),
+                room_type=args.get("room_type"),
+                guest_name=str(args.get("guest_name", "")),
+                contact=str(args.get("contact", "")),
+            )
+        except BookingValidationError as exc:
+            return {
+                "result": f"The booking could not be created: {exc} "
+                          "Correct the details with the caller, or offer the front desk.",
+            }
+        room = _ROOMS[record.room_type]
+        if record.created:
+            return {
+                "result": f"Booking confirmed. Confirmation {record.confirmation_id} for "
+                          f"{record.guest_name} in a {room['name']} from "
+                          f"{record.check_in} to {record.check_out} for "
+                          f"{record.guests} guest(s). Confirmation sent to "
+                          f"{record.contact}.",
+            }
         return {
-            "result": "Booking confirmed. Confirmation AH-4827 for "
-                      f"{args.get('guest_name')} in a {room['name']} from "
-                      f"{args.get('check_in')} to {args.get('check_out')} for "
-                      f"{args.get('guests')} guest(s). Confirmation sent to "
-                      f"{args.get('contact')}.",
+            "result": f"This booking is already confirmed. Confirmation "
+                      f"{record.confirmation_id} for {record.guest_name} in a "
+                      f"{room['name']} from {record.check_in} to {record.check_out}. "
+                      "No duplicate booking was created.",
         }
     if name == "get_room_service_hours":
         # Breakfast window matches hotel_policies.md#Breakfast (one truth, two doors).
@@ -470,9 +475,9 @@ class Agent:
                             }
                     elif tc.function.name == "search_hotel_knowledge":
                         with trace.span("retrieval", query=args.get("query", "")):
-                            result = run_tool(tc.function.name, args)
+                            result = run_tool(tc.function.name, args, session_id=trace.session_id)
                     else:
-                        result = run_tool(tc.function.name, args)
+                        result = run_tool(tc.function.name, args, session_id=trace.session_id)
                 trace.event(
                     "tool.result",
                     tool=tc.function.name,

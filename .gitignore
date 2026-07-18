@@ -9,6 +9,7 @@ __pycache__/
 *.pyc
 private/
 logs/*.jsonl
+logs/*.db
 
 
 LEARNING_GUIDE.md

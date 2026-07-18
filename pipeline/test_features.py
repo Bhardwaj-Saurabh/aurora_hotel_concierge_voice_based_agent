@@ -129,6 +129,71 @@ class RetrievalTests(unittest.TestCase):
         self.assertIn("tool.route_selected", [event["name"] for event in trace.events])
 
 
+class BookingBackendTests(unittest.TestCase):
+    def _backend(self):
+        from bookings import SqliteBookingBackend
+        return SqliteBookingBackend(":memory:")
+
+    def _details(self, **overrides):
+        details = {
+            "session_id": "session-a",
+            "check_in": "August 12",
+            "check_out": "August 14",
+            "guests": 2,
+            "room_type": "standard",
+            "guest_name": "Priya Shah",
+            "contact": "priya@example.com",
+        }
+        details.update(overrides)
+        return details
+
+    def test_identical_retry_returns_same_confirmation(self):
+        backend = self._backend()
+        first = backend.create_booking(**self._details())
+        replay = backend.create_booking(**self._details())
+        self.assertTrue(first.created)
+        self.assertFalse(replay.created)
+        self.assertEqual(first.confirmation_id, replay.confirmation_id)
+
+    def test_distinct_bookings_get_unique_confirmations(self):
+        backend = self._backend()
+        first = backend.create_booking(**self._details())
+        second = backend.create_booking(**self._details(guest_name="John Doe",
+                                                        contact="john@example.com"))
+        self.assertTrue(second.created)
+        self.assertNotEqual(first.confirmation_id, second.confirmation_id)
+
+    def test_first_confirmation_matches_workshop_id(self):
+        # Deterministic sequence keeps the smoke test and demo story stable.
+        backend = self._backend()
+        self.assertEqual(backend.create_booking(**self._details()).confirmation_id, "AH-4827")
+
+    def test_checkout_before_checkin_rejected(self):
+        from bookings import BookingValidationError
+        backend = self._backend()
+        with self.assertRaises(BookingValidationError):
+            backend.create_booking(**self._details(check_in="August 14",
+                                                   check_out="August 12"))
+
+    def test_guests_over_capacity_rejected(self):
+        from bookings import BookingValidationError
+        backend = self._backend()
+        with self.assertRaises(BookingValidationError):
+            backend.create_booking(**self._details(guests=6, room_type="standard"))
+
+    def test_zero_guests_rejected(self):
+        from bookings import BookingValidationError
+        backend = self._backend()
+        with self.assertRaises(BookingValidationError):
+            backend.create_booking(**self._details(guests=0))
+
+    def test_unparseable_dates_are_accepted_leniently(self):
+        backend = self._backend()
+        record = backend.create_booking(**self._details(check_in="next Tuesday",
+                                                        check_out="the Thursday after"))
+        self.assertTrue(record.created)
+
+
 class TelemetryTests(unittest.TestCase):
     def test_tool_and_language_events_are_visible(self):
         agent = Agent(make_provider("mock"))

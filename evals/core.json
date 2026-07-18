@@ -43,6 +43,33 @@
     ]
   },
   {
+    "id": "booking.idempotent_retry",
+    "description": "Retrying an identical booking returns the same confirmation, never a duplicate.",
+    "turns": [
+      {
+        "user": "I need a room from August 12 to August 14 for two guests.",
+        "expect": {
+          "tools": ["check_availability"]
+        }
+      },
+      {
+        "user": "Book it for Priya Shah at priya@example.com.",
+        "expect": {
+          "contains": "AH-4827",
+          "tools": ["create_booking"]
+        }
+      },
+      {
+        "user": "Book it again for Priya Shah at priya@example.com.",
+        "expect": {
+          "contains": "already confirmed",
+          "forbid": ["AH-4828"],
+          "tools": ["create_booking"]
+        }
+      }
+    ]
+  },
+  {
     "id": "grounding.cancellation",
     "description": "Hotel policy answers are retrieved from the local knowledge base.",
     "turns": [
