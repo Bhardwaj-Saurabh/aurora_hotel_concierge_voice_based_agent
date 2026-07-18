@@ -42,6 +42,34 @@
     ]
   },
   {
+    "id": "grounding.parking",
+    "description": "Parking costs are retrieved from the knowledge base with the correct source.",
+    "turns": [
+      {
+        "user": "How much is parking at the hotel?",
+        "expect": {
+          "contains": "$28",
+          "tools": ["search_hotel_knowledge"],
+          "sourceContains": "hotel_policies.md#Parking"
+        }
+      }
+    ]
+  },
+  {
+    "id": "grounding.accessibility",
+    "description": "Accessibility answers are grounded in the knowledge base, not invented.",
+    "turns": [
+      {
+        "user": "Do you have accessible rooms?",
+        "expect": {
+          "contains": "roll-in",
+          "tools": ["search_hotel_knowledge"],
+          "sourceContains": "hotel_policies.md#Accessibility"
+        }
+      }
+    ]
+  },
+  {
     "id": "grounding.after_off_topic",
     "description": "A policy question retrieves knowledge after an off-topic refusal.",
     "turns": [

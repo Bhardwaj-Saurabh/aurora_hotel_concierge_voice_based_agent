@@ -367,6 +367,10 @@ def _grounded_policy_reply(result: str, spanish: bool, query: str) -> str:
         if spanish:
             return "El desayuno se sirve de 6:30 AM a 10:30 AM y solo está incluido cuando la tarifa lo indica."
         return "Breakfast is served from 6:30 AM to 10:30 AM and is included only when the selected rate says so."
+    if "accessib" in topic or "accesib" in topic:
+        if spanish:
+            return "Las habitaciones accesibles pueden incluir duchas sin escalón, alarmas visuales y accesorios a baja altura. Solicite las características necesarias antes de reservar."
+        return "Accessible rooms can include roll-in showers, visual alarms, and lowered fixtures. Please request the features you need before booking so availability can be confirmed."
     if spanish:
         return "Encontré la política de Aurora Hotel y puedo ayudarle con los detalles de su reserva."
     return "I found the relevant Aurora Hotel policy and can help apply it to your reservation."
