@@ -15,6 +15,8 @@ _STOP_WORDS = {
     "is", "me", "of", "policy", "tell", "the", "to", "what", "your",
     "cual", "cuál", "de", "del", "el", "es", "la", "las", "los", "me", "politica",
     "política", "que", "qué", "sobre", "una", "y",
+    "quelle", "quel", "est", "le", "les", "des", "du", "votre", "vos", "un",
+    "une", "politique", "d", "qu", "sont", "il", "y",
 }
 
 _QUERY_EXPANSIONS = {
@@ -26,6 +28,13 @@ _QUERY_EXPANSIONS = {
     "perro": ["pets", "dogs"],
     "perros": ["pets", "dogs"],
     "accesibilidad": ["accessibility", "accessible"],
+    "annulation": ["cancellation", "cancelled"],
+    "animaux": ["pets", "dogs"],
+    "chien": ["pets", "dogs"],
+    "chiens": ["pets", "dogs"],
+    "stationnement": ["parking"],
+    "dejeuner": ["breakfast"],
+    "accessibilite": ["accessibility", "accessible"],
 }
 
 

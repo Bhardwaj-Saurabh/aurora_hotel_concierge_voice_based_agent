@@ -44,10 +44,12 @@ PRESETS = {
 }
 
 DEFAULT_STT_PROMPT = (
-    "Aurora Hotel reservations conversation in English or Spanish. "
+    "Aurora Hotel reservations conversation in English, Spanish, or French. "
     "Hotel vocabulary: reservation, booking, check-in, check-out, cancellation policy, "
     "pet policy, parking, breakfast, accessibility, habitación, reserva, política de "
-    "cancelación, mascotas, estacionamiento, desayuno, accesibilidad."
+    "cancelación, mascotas, estacionamiento, desayuno, accesibilidad, chambre, "
+    "réservation, politique d'annulation, animaux, stationnement, petit déjeuner, "
+    "accessibilité."
 )
 
 
@@ -187,7 +189,15 @@ class MockProvider:
     def chat(self, messages: list[dict], tools=None, tool_choice=None):
         """Rule-based reply mimicking OpenAI-style tool calling."""
         last = messages[-1]
-        spanish = "Current response language: Spanish" in messages[0].get("content", "")
+        system_content = messages[0].get("content", "")
+        if "Current response language: Spanish" in system_content:
+            language = "es"
+        elif "Current response language: French" in system_content:
+            language = "fr"
+        else:
+            language = "en"
+        spanish = language == "es"
+        french = language == "fr"
         forced_tool = _tool_choice_name(tool_choice)
         if forced_tool == "search_hotel_knowledge" and last.get("role") == "user":
             return _mk_tool(forced_tool, {"query": last.get("content") or ""})
@@ -208,23 +218,39 @@ class MockProvider:
                 if _mock_off_topic(original):
                     return _mk_text("I can only help with hotel reservations. Are you looking to book, change, or cancel a stay?")
                 return _mk_text("Of course. I can continue in English with your Aurora Hotel reservation.")
+            if result.lower().startswith("response language set to french"):
+                original = _last_user_text(messages).lower()
+                if _mock_knowledge_request(original):
+                    return _mk_tool("search_hotel_knowledge", {"query": original})
+                if _mock_off_topic(original):
+                    return _mk_text("Je peux uniquement vous aider avec les réservations d'hôtel. Souhaitez-vous réserver, modifier ou annuler un séjour ?")
+                return _mk_text("Bien sûr. Je peux vous aider avec votre réservation à l'hôtel Aurora.")
             if result.lower().startswith("available rooms"):
                 if spanish:
                     return _mk_text(f"{result} ¿Quiere que reserve una de estas habitaciones?")
+                if french:
+                    return _mk_text(f"{result} Souhaitez-vous que je réserve l'une de ces chambres ?")
                 return _mk_text(f"{result} Would you like me to book one of these?")
             if result.lower().startswith("booking confirmed"):
+                confirmation = re.search(r"AH-\d+", result)
                 if spanish:
-                    confirmation = re.search(r"AH-\d+", result)
                     code = confirmation.group(0) if confirmation else "confirmada"
                     return _mk_text(f"La reserva está confirmada. Su número de confirmación es {code}.")
+                if french:
+                    code = confirmation.group(0) if confirmation else "confirmée"
+                    return _mk_text(f"La réservation est confirmée. Votre numéro de confirmation est {code}.")
                 return _mk_text(result)
             if result.lower().startswith("grounded hotel knowledge"):
                 tool_args = _previous_tool_arguments(messages)
-                return _mk_text(_grounded_policy_reply(result, spanish, tool_args.get("query", "")))
+                return _mk_text(_grounded_policy_reply(result, language, tool_args.get("query", "")))
             if result.lower().startswith("transferring") and spanish:
                 return _mk_text("Le transfiero a la recepción.")
+            if result.lower().startswith("transferring") and french:
+                return _mk_text("Je vous transfère à la réception.")
             if result.lower().startswith("ending") and spanish:
                 return _mk_text("Gracias por llamar a Aurora Hotel. Adiós.")
+            if result.lower().startswith("ending") and french:
+                return _mk_text("Merci d'avoir appelé l'hôtel Aurora. Au revoir.")
             return _mk_text(result)  # transfer / hangup / not-found: speak as-is
 
         text = (last.get("content") or "").lower()
@@ -237,19 +263,28 @@ class MockProvider:
         if any(phrase in text for phrase in (
             "speak english", "switch to english", "switch back to english",
             "back to english", "return to english", "english please", "english again",
-            "habla inglés", "hable inglés", "en inglés", "habla ingles",
+            "habla inglés", "hable inglés", "en inglés", "habla ingles", "en anglais",
         )):
             return _mk_tool("set_language", {"language": "en"})
+        if any(phrase in text for phrase in (
+            "speak french", "switch to french", "french please", "in french",
+            "parle français", "parlez français", "en français",
+            "parle francais", "parlez francais", "en francais",
+        )):
+            return _mk_tool("set_language", {"language": "fr"})
         if "room service" in text or "in-room dining" in text:
             return _mk_tool("get_room_service_hours", {})
         if _mock_knowledge_request(text):
             return _mk_tool("search_hotel_knowledge", {"query": last.get("content") or ""})
         if any(w in text for w in ("bye", "goodbye", "that's all", "thats all",
-                                   "nothing else", "no thanks", "hang up", "adiós", "adios")):
+                                   "nothing else", "no thanks", "hang up", "adiós", "adios",
+                                   "au revoir")):
             return _mk_tool("end_call", {})
         if _mock_off_topic(text):
             if spanish:
                 return _mk_text("Solo puedo ayudar con reservas de hotel. ¿Quiere reservar, cambiar o cancelar una estancia?")
+            if french:
+                return _mk_text("Je peux uniquement vous aider avec les réservations d'hôtel. Souhaitez-vous réserver, modifier ou annuler un séjour ?")
             return _mk_text("I can only help with hotel reservations. Are you looking to book, change, or cancel a stay?")
         if any(phrase in text for phrase in (
             "another reservation", "another guest", "other guest", "someone else's",
@@ -275,6 +310,7 @@ class MockProvider:
         if any(w in text for w in (
             "room", "hotel", "stay", "book", "reservation", "guests", "guest",
             "habitación", "habitacion", "reserva", "personas", "huéspedes", "huespedes",
+            "chambre", "personnes", "réservation",
         )):
             return _mk_tool("check_availability", {
                 "check_in": "August 12",
@@ -284,6 +320,8 @@ class MockProvider:
             })
         if spanish:
             return _mk_text("Solo puedo ayudar con reservas de hotel. ¿Quiere reservar, cambiar o cancelar una estancia?")
+        if french:
+            return _mk_text("Je peux uniquement vous aider avec les réservations d'hôtel. Souhaitez-vous réserver, modifier ou annuler un séjour ?")
         return _mk_text("I can help with hotel reservations only. Would you like to book, change, or cancel a stay?")
 
     def transcribe(self, pcm_int16: bytes, sample_rate: int = 16000) -> str:
@@ -328,6 +366,8 @@ def _mock_knowledge_request(text: str) -> bool:
         "cancellation policy", "cancel policy", "check-in", "check in", "check-out",
         "check out", "parking", "pets", "pet policy", "breakfast", "accessible",
         "accessibility", "policy", "estacionamiento", "mascotas", "desayuno",
+        "annulation", "animaux", "stationnement", "petit déjeuner", "petit dejeuner",
+        "accessibilité", "accessibilite", "politique",
     ))
 
 
@@ -355,30 +395,44 @@ def _previous_tool_arguments(messages: list[dict]) -> dict:
         return {}
 
 
-def _grounded_policy_reply(result: str, spanish: bool, query: str) -> str:
+def _grounded_policy_reply(result: str, language: str, query: str) -> str:
     topic = query.lower()
-    if "cancel" in topic:
+    spanish = language == "es"
+    french = language == "fr"
+    if "cancel" in topic or "annulation" in topic:
         if spanish:
             return "Puede cancelar sin cargo hasta las 6:00 PM, hora local del hotel, dos días antes de la llegada. Las tarifas promocionales prepagadas no son reembolsables."
+        if french:
+            return "Vous pouvez annuler sans frais jusqu'à 18h00, heure locale de l'hôtel, deux jours avant l'arrivée. Les tarifs promotionnels prépayés ne sont pas remboursables."
         return "You may cancel without charge until 6:00 PM local hotel time two days before arrival. Prepaid promotional rates are non-refundable."
-    if "parking" in topic or "estacionamiento" in topic:
+    if "parking" in topic or "estacionamiento" in topic or "stationnement" in topic:
         if spanish:
             return "El estacionamiento cuesta $28 por noche y el servicio de valet cuesta $42 por noche."
+        if french:
+            return "Le stationnement coûte 28 $ par nuit et le service de voiturier coûte 42 $ par nuit."
         return "Self-parking is $28 per night, and valet parking is $42 per night."
-    if "pet" in topic or "dog" in topic or "mascota" in topic:
+    if "pet" in topic or "dog" in topic or "mascota" in topic or "animaux" in topic or "chien" in topic:
         if spanish:
             return "Se permiten hasta dos perros por habitación, con un límite de 50 libras por perro y una tarifa de limpieza de $75 por estancia."
+        if french:
+            return "Deux chiens maximum sont admis par chambre, avec une limite de 50 livres par chien et des frais de nettoyage de 75 $ par séjour."
         return "Up to two dogs are allowed per room, with a 50-pound limit per dog and a $75 cleaning fee per stay."
-    if "breakfast" in topic or "desayuno" in topic:
+    if "breakfast" in topic or "desayuno" in topic or "dejeuner" in topic or "déjeuner" in topic:
         if spanish:
             return "El desayuno se sirve de 6:30 AM a 10:30 AM y solo está incluido cuando la tarifa lo indica."
+        if french:
+            return "Le petit déjeuner est servi de 6h30 à 10h30 et n'est inclus que lorsque le tarif choisi le précise."
         return "Breakfast is served from 6:30 AM to 10:30 AM and is included only when the selected rate says so."
     if "accessib" in topic or "accesib" in topic:
         if spanish:
             return "Las habitaciones accesibles pueden incluir duchas sin escalón, alarmas visuales y accesorios a baja altura. Solicite las características necesarias antes de reservar."
+        if french:
+            return "Les chambres accessibles peuvent inclure des douches de plain-pied, des alarmes visuelles et des équipements abaissés. Veuillez demander les caractéristiques nécessaires avant de réserver."
         return "Accessible rooms can include roll-in showers, visual alarms, and lowered fixtures. Please request the features you need before booking so availability can be confirmed."
     if spanish:
         return "Encontré la política de Aurora Hotel y puedo ayudarle con los detalles de su reserva."
+    if french:
+        return "J'ai trouvé la politique de l'hôtel Aurora et je peux vous aider avec les détails de votre réservation."
     return "I found the relevant Aurora Hotel policy and can help apply it to your reservation."
 
 

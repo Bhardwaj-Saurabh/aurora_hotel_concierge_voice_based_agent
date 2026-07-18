@@ -156,6 +156,51 @@
     ]
   },
   {
+    "id": "router.language_switch_french",
+    "description": "The same session can switch to French, stay grounded, and switch back.",
+    "turns": [
+      {
+        "user": "Please speak French.",
+        "expect": {
+          "contains": "Bien sûr",
+          "language": "fr",
+          "tools": ["set_language"]
+        }
+      },
+      {
+        "user": "Je voudrais une chambre pour deux personnes.",
+        "expect": {
+          "contains": "Souhaitez-vous",
+          "tools": ["check_availability"],
+          "language": "fr"
+        }
+      },
+      {
+        "user": "Quelle est la politique d'annulation ?",
+        "expect": {
+          "contains": "sans frais",
+          "tools": ["search_hotel_knowledge"],
+          "language": "fr",
+          "sourceContains": "hotel_policies.md#Cancellation"
+        }
+      },
+      {
+        "user": "Switch back to English.",
+        "expect": {
+          "language": "en",
+          "tools": ["set_language"]
+        }
+      },
+      {
+        "user": "Merci !",
+        "expect": {
+          "language": "en",
+          "tools": []
+        }
+      }
+    ]
+  },
+  {
     "id": "control.transfer",
     "description": "A human request produces the transfer control action.",
     "turns": [

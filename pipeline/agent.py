@@ -67,15 +67,17 @@ TOOLS = [
         "function": {
             "name": "set_language",
             "description": "Set the response language for this call when the caller asks to speak, "
-                           "continue, switch, or switch back in English or Spanish. Only call for an "
-                           "explicit language-change request, not an isolated foreign word or courtesy.",
+                           "continue, switch, or switch back in English, Spanish, or French. Only call "
+                           "for an explicit language-change request, not an isolated foreign word or "
+                           "courtesy.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "language": {
                         "type": "string",
-                        "enum": ["en", "es"],
-                        "description": "Requested response language: en for English or es for Spanish.",
+                        "enum": ["en", "es", "fr"],
+                        "description": "Requested response language: en for English, es for Spanish, "
+                                       "or fr for French.",
                     },
                 },
                 "required": ["language"],
@@ -196,16 +198,21 @@ _KNOWLEDGE_INTENT_PHRASES = (
     "check out", "accessibility", "accessible room", "wi-fi", "wifi", "amenities",
     "política de cancelación", "politica de cancelacion", "mascotas",
     "estacionamiento", "desayuno", "accesibilidad",
+    "politique d'annulation", "animaux", "stationnement",
+    "petit déjeuner", "petit dejeuner", "accessibilité", "accessibilite",
 )
 
 _FUZZY_AMENITY_TERMS = (
     "mascota", "mascotas", "pet", "pets", "parking", "estacionamiento",
     "breakfast", "desayuno", "accessibility", "accesibilidad", "wifi",
+    "animaux", "stationnement", "dejeuner", "accessibilite",
 )
 
+# Normalized (accent-stripped) tokens; each set names that language in EN/ES/FR.
 _LANGUAGE_NAMES = {
-    "en": {"english", "ingles"},
-    "es": {"spanish", "espanol"},
+    "en": {"english", "ingles", "anglais"},
+    "es": {"spanish", "espanol", "espagnol"},
+    "fr": {"french", "francais", "frances"},
 }
 
 
@@ -239,8 +246,8 @@ def required_tool_for(text: str) -> str | None:
     tokens = _normalized_tokens(text)
     if _has_fuzzy_term(tokens, _FUZZY_AMENITY_TERMS):
         return "search_hotel_knowledge"
-    has_policy = _has_fuzzy_term(tokens, ("policy", "politica"))
-    has_cancellation = _has_fuzzy_term(tokens, ("cancellation", "cancelacion"))
+    has_policy = _has_fuzzy_term(tokens, ("policy", "politica", "politique"))
+    has_cancellation = _has_fuzzy_term(tokens, ("cancellation", "cancelacion", "annulation"))
     if has_policy and has_cancellation:
         return "search_hotel_knowledge"
     return None
