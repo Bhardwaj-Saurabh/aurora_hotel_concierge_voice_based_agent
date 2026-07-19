@@ -30,7 +30,9 @@ Assignment_2_voice_agent/
 |-- README.md
 |-- RUNBOOK.md
 |-- knowledge/
-|   `-- hotel_policies.md
+|   `-- 2026-07-19/            # date-stamped snapshot; newest loads by default
+|       |-- manifest.json      # authoritative file list for the snapshot
+|       `-- hotel_policies.md
 |-- evals/
 |   |-- core.json
 |   |-- red_team.json

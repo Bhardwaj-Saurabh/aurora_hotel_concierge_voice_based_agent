@@ -129,6 +129,73 @@ class RetrievalTests(unittest.TestCase):
         self.assertIn("tool.route_selected", [event["name"] for event in trace.events])
 
 
+class KnowledgeSnapshotTests(unittest.TestCase):
+    def _snapshot_root(self):
+        import json
+        import tempfile
+        from pathlib import Path
+
+        root = Path(tempfile.mkdtemp())
+        for stamp, policy in (
+            ("2026-01-01", "Self-parking costs $10 per night."),
+            ("2026-02-02", "Self-parking costs $99 per night."),
+        ):
+            snapshot = root / stamp
+            snapshot.mkdir()
+            (snapshot / "hotel_policies.md").write_text(
+                f"# Policies\n\n## Parking\n\n{policy}\n", encoding="utf-8"
+            )
+            (snapshot / "manifest.json").write_text(
+                json.dumps({"snapshot": stamp, "files": ["hotel_policies.md"]}),
+                encoding="utf-8",
+            )
+        return root
+
+    def test_latest_snapshot_wins(self):
+        from knowledge import KnowledgeBase
+        kb = KnowledgeBase(self._snapshot_root())
+        self.assertEqual(kb.snapshot, "2026-02-02")
+        self.assertIn("$99", kb.search("parking")[0]["text"])
+
+    def test_pinned_snapshot_rolls_back(self):
+        from knowledge import KnowledgeBase
+        kb = KnowledgeBase(self._snapshot_root(), snapshot="2026-01-01")
+        self.assertEqual(kb.snapshot, "2026-01-01")
+        self.assertIn("$10", kb.search("parking")[0]["text"])
+
+    def test_invalid_pin_raises_clearly(self):
+        from knowledge import KnowledgeBase
+        with self.assertRaises(ValueError):
+            KnowledgeBase(self._snapshot_root(), snapshot="1999-01-01")
+
+    def test_manifest_is_authoritative(self):
+        from knowledge import KnowledgeBase
+        root = self._snapshot_root()
+        (root / "2026-02-02" / "rogue.md").write_text(
+            "## Secret\n\nRogue unreviewed content about parking.\n", encoding="utf-8"
+        )
+        kb = KnowledgeBase(root)
+        self.assertFalse(any(c["source"] == "rogue.md" for c in kb.chunks))
+
+    def test_loose_files_still_work_without_snapshots(self):
+        import tempfile
+        from pathlib import Path
+        from knowledge import KnowledgeBase
+
+        root = Path(tempfile.mkdtemp())
+        (root / "hotel_policies.md").write_text(
+            "# Policies\n\n## Parking\n\nSelf-parking costs $28 per night.\n",
+            encoding="utf-8",
+        )
+        kb = KnowledgeBase(root)
+        self.assertEqual(kb.snapshot, "unversioned")
+        self.assertIn("$28", kb.search("parking")[0]["text"])
+
+    def test_repo_knowledge_loads_from_a_snapshot(self):
+        from knowledge import KNOWLEDGE_BASE
+        self.assertNotEqual(KNOWLEDGE_BASE.snapshot, "unversioned")
+
+
 class LatencyFillerTests(unittest.TestCase):
     def test_filler_plays_when_turn_exceeds_threshold(self):
         import time

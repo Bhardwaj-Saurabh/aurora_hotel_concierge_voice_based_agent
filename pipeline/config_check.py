@@ -81,6 +81,15 @@ def validate_config(env: Mapping[str, str] | None = None) -> list[str]:
         except OSError as exc:
             problems.append(f"TELEMETRY_JSONL={telemetry!r} is not writable: {exc}")
 
+    pin = _value(env, "KNOWLEDGE_SNAPSHOT")
+    if pin:
+        from knowledge import KNOWLEDGE_ROOT, _snapshot_dirs
+        if not any(d.name == pin for d in _snapshot_dirs(KNOWLEDGE_ROOT)):
+            available = ", ".join(d.name for d in _snapshot_dirs(KNOWLEDGE_ROOT)) or "none"
+            problems.append(
+                f"KNOWLEDGE_SNAPSHOT={pin!r} does not exist (available: {available})."
+            )
+
     bookings = _value(env, "BOOKINGS_DB")
     if bookings and bookings != ":memory:":
         try:

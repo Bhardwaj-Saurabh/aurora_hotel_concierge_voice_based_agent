@@ -1,0 +1,5 @@
+{
+  "snapshot": "2026-07-19",
+  "description": "Initial versioned snapshot of Aurora hotel policies (migrated from the unversioned layout).",
+  "files": ["hotel_policies.md"]
+}

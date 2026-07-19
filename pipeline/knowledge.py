@@ -1,7 +1,17 @@
-"""Self-contained sparse retrieval for hotel policies and amenities."""
+"""Self-contained sparse retrieval for hotel policies and amenities.
+
+Knowledge ops (goal.md 2.6): the knowledge base is versioned as date-stamped
+snapshot folders (`knowledge/YYYY-MM-DD/`) each holding a `manifest.json` that
+lists the files belonging to that snapshot. The newest snapshot loads by
+default; setting KNOWLEDGE_SNAPSHOT in .env pins an older one — a one-line
+rollback. The manifest is authoritative: files not listed are not indexed.
+Loose *.md files in the root remain a fallback for unversioned layouts.
+"""
 
 from __future__ import annotations
 
+import json
+import os
 import re
 import sqlite3
 import unicodedata
@@ -69,12 +79,43 @@ def _chunks_from_markdown(path: Path) -> list[dict]:
     return chunks
 
 
+def _snapshot_dirs(root: Path) -> list[Path]:
+    if not root.is_dir():
+        return []
+    return sorted(
+        entry for entry in root.iterdir()
+        if entry.is_dir() and (entry / "manifest.json").is_file()
+    )
+
+
+def _resolve_sources(root: Path, snapshot: str | None) -> tuple[str, list[Path]]:
+    """Return (snapshot_name, files_to_index) honoring an explicit pin."""
+    snapshots = _snapshot_dirs(root)
+    if snapshot:
+        pinned = root / snapshot
+        if pinned not in snapshots:
+            available = ", ".join(d.name for d in snapshots) or "none"
+            raise ValueError(
+                f"KNOWLEDGE_SNAPSHOT={snapshot!r} not found under {root} "
+                f"(available: {available})."
+            )
+        chosen = pinned
+    elif snapshots:
+        chosen = snapshots[-1]          # date-stamped names sort chronologically
+    else:
+        return "unversioned", sorted(root.glob("*.md"))
+    manifest = json.loads((chosen / "manifest.json").read_text(encoding="utf-8"))
+    files = [chosen / name for name in manifest.get("files", [])]
+    return chosen.name, [path for path in files if path.is_file()]
+
+
 class KnowledgeBase:
     """Index Markdown chunks with SQLite FTS5 and a lexical fallback."""
 
-    def __init__(self, root: Path = KNOWLEDGE_ROOT):
+    def __init__(self, root: Path = KNOWLEDGE_ROOT, snapshot: str | None = None):
+        self.snapshot, sources = _resolve_sources(root, snapshot)
         self.chunks: list[dict] = []
-        for path in sorted(root.glob("*.md")):
+        for path in sources:
             self.chunks.extend(_chunks_from_markdown(path))
         self.connection: sqlite3.Connection | None = None
         try:
@@ -127,7 +168,7 @@ class KnowledgeBase:
         return [dict(chunk, score=-score) for score, chunk in ranked[:limit]]
 
 
-KNOWLEDGE_BASE = KnowledgeBase()
+KNOWLEDGE_BASE = KnowledgeBase(snapshot=os.getenv("KNOWLEDGE_SNAPSHOT", "").strip() or None)
 
 
 def search_hotel_knowledge(query: str, limit: int = 3) -> dict:
