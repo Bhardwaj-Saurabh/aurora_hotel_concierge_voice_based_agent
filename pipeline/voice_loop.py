@@ -21,6 +21,7 @@ import uuid
 
 from agent import Agent, FALLBACK_RETRY_MESSAGES, FALLBACK_TRANSFER_MESSAGES
 from providers import make_provider
+from spoken_text import normalize_spoken_text
 from telemetry import TurnTrace, format_trace, write_trace
 
 try:
@@ -96,8 +97,10 @@ def speak(provider, text: str, trace: TurnTrace | None = None) -> None:
     """Speak `text`: cloud TTS returns audio, or the provider handles playback.
 
     A TTS failure never crashes the call (goal.md 2.2): fall back to the local
-    system voice; the text is already printed either way.
+    system voice; the text is already printed either way. Text is normalized
+    first (goal.md 2.4) so markdown never reaches a voice.
     """
+    text = normalize_spoken_text(text)
     print(f"agent> {text}")
     try:
         audio = provider.synthesize(text)

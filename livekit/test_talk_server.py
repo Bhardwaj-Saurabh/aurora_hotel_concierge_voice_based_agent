@@ -9,6 +9,29 @@ from contextlib import contextmanager
 from talk_server import _browser_tts_payload
 
 
+class NormalizedReplyTests(unittest.TestCase):
+    def test_finish_response_normalizes_reply_for_speech(self):
+        import talk_server
+
+        class FakeAgent:
+            last_sources = []
+            current_language = "en"
+            current_locale = "en-US"
+
+            class provider:
+                name = "mock"
+                llm_model = "mock-llm"
+
+        class FinishableTrace(FakeTrace):
+            def finish(self, **attributes):
+                return {"attributes": attributes}
+
+        payload = talk_server._finish_response(
+            FakeAgent(), FinishableTrace(), "**Confirmed** — see `AH-4827`", None,
+        )
+        self.assertEqual(payload["reply"], "Confirmed, see AH-4827")
+
+
 class FakeTrace:
     def __init__(self):
         self.events = []

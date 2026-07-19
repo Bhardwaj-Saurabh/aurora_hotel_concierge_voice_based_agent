@@ -129,6 +129,82 @@ class RetrievalTests(unittest.TestCase):
         self.assertIn("tool.route_selected", [event["name"] for event in trace.events])
 
 
+class SpokenTextTests(unittest.TestCase):
+    def test_markdown_bullets_and_emphasis_stripped(self):
+        from spoken_text import normalize_spoken_text
+        raw = "- **Check-in** is at 3 PM\n- Check-out is at `11 AM`"
+        self.assertEqual(
+            normalize_spoken_text(raw),
+            "Check-in is at 3 PM Check-out is at 11 AM",
+        )
+
+    def test_numbered_lists_and_headers_stripped(self):
+        from spoken_text import normalize_spoken_text
+        raw = "## Hours\n1. Breakfast at 6:30 AM\n2. Dinner at 5 PM"
+        self.assertEqual(
+            normalize_spoken_text(raw),
+            "Hours Breakfast at 6:30 AM Dinner at 5 PM",
+        )
+
+    def test_em_dashes_become_commas_but_word_hyphens_survive(self):
+        from spoken_text import normalize_spoken_text
+        raw = "Parking — $28 per night — includes in-room check-in"
+        self.assertEqual(
+            normalize_spoken_text(raw),
+            "Parking, $28 per night, includes in-room check-in",
+        )
+
+    def test_markdown_links_keep_only_the_label(self):
+        from spoken_text import normalize_spoken_text
+        self.assertEqual(
+            normalize_spoken_text("See [our policies](https://example.com/p)."),
+            "See our policies.",
+        )
+
+    def test_whitespace_collapsed(self):
+        from spoken_text import normalize_spoken_text
+        self.assertEqual(
+            normalize_spoken_text("Hello   there\n\n  caller"),
+            "Hello there caller",
+        )
+
+    def test_chunk_short_text_is_single_chunk(self):
+        from spoken_text import chunk_text
+        self.assertEqual(chunk_text("Welcome to Aurora."), ["Welcome to Aurora."])
+        self.assertEqual(chunk_text(""), [])
+
+    def test_chunk_splits_at_sentence_boundaries_under_limit(self):
+        from spoken_text import chunk_text
+        text = " ".join(f"Sentence number {i} is here." for i in range(1, 21))
+        chunks = chunk_text(text, max_chars=80)
+        self.assertGreater(len(chunks), 1)
+        self.assertTrue(all(len(c) <= 80 for c in chunks))
+        self.assertTrue(all(c.endswith(".") for c in chunks))
+        self.assertEqual(" ".join(chunks), text)
+
+    def test_chunk_hard_splits_oversized_sentence(self):
+        from spoken_text import chunk_text
+        text = "word " * 100
+        chunks = chunk_text(text.strip(), max_chars=40)
+        self.assertTrue(all(len(c) <= 40 for c in chunks))
+
+    def test_speak_normalizes_before_tts(self):
+        from voice_loop import speak
+
+        class RecordingTTSProvider(MockProvider):
+            def __init__(self):
+                super().__init__()
+                self.spoken = []
+
+            def synthesize(self, text):
+                self.spoken.append(text)
+                return None
+
+        provider = RecordingTTSProvider()
+        speak(provider, "**Booking confirmed** — code `AH-4827`")
+        self.assertEqual(provider.spoken, ["Booking confirmed, code AH-4827"])
+
+
 class ConfigCheckTests(unittest.TestCase):
     def test_mock_provider_needs_no_keys(self):
         from config_check import validate_config

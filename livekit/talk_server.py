@@ -27,6 +27,10 @@ ROOT = Path(__file__).resolve().parent
 ASSIGNMENT_ROOT = ROOT.parent
 PIPELINE_ROOT = ASSIGNMENT_ROOT / "pipeline"
 
+if str(PIPELINE_ROOT) not in sys.path:
+    sys.path.insert(0, str(PIPELINE_ROOT))
+from spoken_text import normalize_spoken_text  # noqa: E402
+
 _session_registry_lock = threading.Lock()
 _agent_sessions: dict[str, object] = {}
 _session_locks: dict[str, threading.Lock] = {}
@@ -97,6 +101,7 @@ def _trace(session_id: str, turn_id: str | None = None):
 def _finish_response(agent, trace, reply: str, action: str | None, **extra) -> dict:
     from telemetry import write_trace
 
+    reply = normalize_spoken_text(reply)  # browser TTS speaks this verbatim (goal.md 2.4)
     sources = extra.pop("response_sources", agent.last_sources)
     payload = trace.finish(action=action, sources=sources)
     write_trace(payload)
@@ -115,6 +120,7 @@ def _finish_response(agent, trace, reply: str, action: str | None, **extra) -> d
 
 def _browser_tts_payload(agent, trace, text: str) -> dict:
     """Return provider audio for the browser or select its local voice fallback."""
+    text = normalize_spoken_text(text)  # never synthesize markdown (goal.md 2.4)
     provider = agent.provider
     backend = getattr(provider, "tts_backend", "provider")
     if backend != "provider" or getattr(provider, "name", "") == "mock":
