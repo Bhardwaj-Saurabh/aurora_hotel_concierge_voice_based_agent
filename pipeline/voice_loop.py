@@ -29,9 +29,11 @@ try:
 except ModuleNotFoundError:
     pass  # .env is optional; env vars still work. Keeps the offline mock zero-install.
 
-SAMPLE_RATE = int(os.getenv("SAMPLE_RATE", "16000"))
-VAD_AGGRESSIVENESS = int(os.getenv("VAD_AGGRESSIVENESS", "2"))
-ENDPOINT_SILENCE_MS = int(os.getenv("ENDPOINT_SILENCE_MS", "600"))
+# Env is parsed lazily (not at import) so config_check can report a malformed
+# value as one clear startup message instead of an import-time traceback.
+
+def _sample_rate() -> int:
+    return int(os.getenv("SAMPLE_RATE", "16000"))
 
 
 # --- Audio (imported lazily so --text mode needs no audio libs) ---
@@ -40,6 +42,10 @@ def record_utterance(trace: TurnTrace) -> bytes:
     """Capture mic until the caller pauses (VAD endpointing). Returns 16-bit PCM."""
     import sounddevice as sd
     import webrtcvad
+
+    SAMPLE_RATE = _sample_rate()
+    VAD_AGGRESSIVENESS = int(os.getenv("VAD_AGGRESSIVENESS", "2"))
+    ENDPOINT_SILENCE_MS = int(os.getenv("ENDPOINT_SILENCE_MS", "600"))
 
     vad = webrtcvad.Vad(VAD_AGGRESSIVENESS)
     frame_ms = 30
@@ -145,7 +151,7 @@ def run(text_mode: bool) -> None:
                     pcm = record_utterance(trace)
                 try:
                     with trace.span("stt", model=getattr(provider, "stt_model", "unknown")):
-                        user_text = provider.transcribe(pcm, SAMPLE_RATE)
+                        user_text = provider.transcribe(pcm, _sample_rate())
                     stt_failures = 0
                 except Exception as exc:
                     stt_failures += 1
@@ -194,6 +200,8 @@ def main() -> None:
     parser.add_argument("--text", action="store_true",
                         help="type turns instead of speaking (no mic / no audio deps)")
     args = parser.parse_args()
+    from config_check import require_valid_config
+    require_valid_config()  # fail fast, before the first turn (goal.md 2.3)
     run(text_mode=args.text)
 
 

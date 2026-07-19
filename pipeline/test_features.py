@@ -129,6 +129,50 @@ class RetrievalTests(unittest.TestCase):
         self.assertIn("tool.route_selected", [event["name"] for event in trace.events])
 
 
+class ConfigCheckTests(unittest.TestCase):
+    def test_mock_provider_needs_no_keys(self):
+        from config_check import validate_config
+        self.assertEqual(validate_config({"PROVIDER": "mock"}), [])
+
+    def test_invalid_provider_flagged(self):
+        from config_check import validate_config
+        problems = validate_config({"PROVIDER": "banana"})
+        self.assertTrue(any("PROVIDER" in p for p in problems))
+
+    def test_live_provider_requires_matching_key(self):
+        from config_check import validate_config
+        problems = validate_config({"PROVIDER": "openai"})
+        self.assertTrue(any("OPENAI_API_KEY" in p for p in problems))
+        problems = validate_config({"PROVIDER": "groq", "GROQ_API_KEY": "gsk-x"})
+        self.assertEqual(problems, [])
+
+    def test_unwritable_telemetry_path_flagged(self):
+        from config_check import validate_config
+        problems = validate_config({
+            "PROVIDER": "mock",
+            "TELEMETRY_JSONL": "/dev/null/nested/voice-events.jsonl",
+        })
+        self.assertTrue(any("TELEMETRY_JSONL" in p for p in problems))
+
+    def test_unopenable_bookings_db_flagged(self):
+        from config_check import validate_config
+        problems = validate_config({
+            "PROVIDER": "mock",
+            "BOOKINGS_DB": "/dev/null/nested/bookings.db",
+        })
+        self.assertTrue(any("BOOKINGS_DB" in p for p in problems))
+
+    def test_bad_numeric_flagged(self):
+        from config_check import validate_config
+        problems = validate_config({"PROVIDER": "mock", "ENDPOINT_SILENCE_MS": "fast"})
+        self.assertTrue(any("ENDPOINT_SILENCE_MS" in p for p in problems))
+
+    def test_bad_tts_backend_flagged(self):
+        from config_check import validate_config
+        problems = validate_config({"PROVIDER": "mock", "TTS_BACKEND": "cloud"})
+        self.assertTrue(any("TTS_BACKEND" in p for p in problems))
+
+
 class FailureFallbackTests(unittest.TestCase):
     class FailingChatProvider(MockProvider):
         def chat(self, *args, **kwargs):

@@ -357,6 +357,10 @@ def main() -> None:
         "TELEMETRY_JSONL",
         str(ASSIGNMENT_ROOT / "logs" / "voice-events.jsonl"),
     )
+    if str(PIPELINE_ROOT) not in sys.path:
+        sys.path.insert(0, str(PIPELINE_ROOT))
+    from config_check import require_valid_config
+    require_valid_config()  # fail fast, before the first call (goal.md 2.3)
     server = ThreadingHTTPServer((HOST, PORT), Handler)
     print(f"Open http://{HOST}:{PORT}")
     print(f"LiveKit URL: {_livekit_url()}")
