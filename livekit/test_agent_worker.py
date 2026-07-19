@@ -90,6 +90,58 @@ class RoomAgentAdapterTests(unittest.TestCase):
         self.assertIn("Claro", reply)
 
 
+class CancellationTests(unittest.TestCase):
+    def test_aclose_stops_the_producer_thread(self):
+        import time
+
+        import agent_worker
+        from agent import Agent
+        from providers import MockProvider
+        from types import SimpleNamespace as NS
+
+        class SlowStream(MockProvider):
+            def __init__(self):
+                super().__init__()
+                self.chunks_served = 0
+
+            def stream_chat(self, messages, tools=None, tool_choice=None):
+                for i in range(20):
+                    self.chunks_served += 1
+                    time.sleep(0.02)
+                    yield NS(choices=[NS(delta=NS(content=f"w{i} ", tool_calls=None))])
+
+        provider = SlowStream()
+
+        class Recording(agent_worker.AuroraRoomAgent):
+            def __init__(self):
+                super().__init__(Agent(provider), session_id="cancel-room")
+                self.finished_with = []
+
+            def _schedule_finish(self, action):
+                self.finished_with.append(action)
+
+        agent = Recording()
+
+        async def run():
+            agen = agent.llm_node(_chat_ctx(("user", "Hello")), [], None)
+            heard = []
+            async for piece in agen:
+                heard.append(piece)
+                if len(heard) == 2:
+                    await agen.aclose()   # framework barge-in closes the stream
+                    break
+            return heard
+
+        heard = asyncio.run(run())
+        self.assertEqual(len(heard), 2)
+        time.sleep(0.3)                    # a zombie thread would keep serving chunks
+        served = provider.chunks_served
+        time.sleep(0.2)
+        self.assertEqual(provider.chunks_served, served)   # producer stopped
+        self.assertLess(provider.chunks_served, 20)
+        self.assertEqual(agent.finished_with, [])
+
+
 class WorkerConfigTests(unittest.TestCase):
     def test_mock_provider_is_rejected_for_live_rooms(self):
         import agent_worker

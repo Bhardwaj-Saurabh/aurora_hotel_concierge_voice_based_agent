@@ -285,6 +285,11 @@ def _named_tool_choice(name: str) -> dict:
     return {"type": "function", "function": {"name": name}}
 
 
+def _cancel_requested(cancel) -> bool:
+    """Cooperative barge-in signal (goal.md 3.3): a threading.Event or None."""
+    return cancel is not None and cancel.is_set()
+
+
 # --- Tool implementations (availability is mock; bookings persist via bookings.py) ---
 
 
@@ -380,7 +385,8 @@ class Agent:
         reply = "".join(self.respond_stream(user_text, trace=trace))
         return reply, self.last_action
 
-    def respond_stream(self, user_text: str, trace: TurnTrace | None = None):
+    def respond_stream(self, user_text: str, trace: TurnTrace | None = None,
+                       cancel=None):
         """Yield the spoken reply incrementally; the final control action lands
         in `self.last_action`.
 
@@ -389,6 +395,11 @@ class Agent:
         deltas are yielded as they arrive so TTS can start before the full
         reply exists; the `llm` timing then records time-to-first-token — the
         latency that matters for voice.
+
+        `cancel` (a threading.Event) is the barge-in signal (goal.md 3.3):
+        once set, the provider stream is closed (stop paying for tokens),
+        pending tool calls get synthetic responses (history stays OpenAI-valid),
+        and history keeps only what the caller actually heard.
         """
         trace = trace or TurnTrace()
         self.last_trace = trace
@@ -426,6 +437,9 @@ class Agent:
         first_model_call = True
 
         while True:
+            if _cancel_requested(cancel):
+                self._close_cancelled(trace, "")
+                return
             tool_choice = (
                 _named_tool_choice(required_tool)
                 if first_model_call and required_tool
@@ -454,7 +468,12 @@ class Agent:
                     llm_started = time.perf_counter()
                     assembled: dict[int, dict] = {}
                     first_token_at = None
-                    for chunk in stream_fn(self.messages, tools=TOOLS, tool_choice=tool_choice):
+                    cancelled_mid_stream = False
+                    stream = stream_fn(self.messages, tools=TOOLS, tool_choice=tool_choice)
+                    for chunk in stream:
+                        if _cancel_requested(cancel):
+                            cancelled_mid_stream = True
+                            break
                         delta = chunk.choices[0].delta
                         for tc_delta in (getattr(delta, "tool_calls", None) or []):
                             entry = assembled.setdefault(
@@ -478,6 +497,12 @@ class Agent:
                                 )
                             content_parts.append(piece)
                             yield piece
+                    if cancelled_mid_stream:
+                        # Close the provider stream: no more tokens billed for
+                        # a reply nobody is listening to.
+                        getattr(stream, "close", lambda: None)()
+                        self._close_cancelled(trace, "".join(content_parts))
+                        return
                     # For voice, time-to-first-token IS the llm latency; a pure
                     # tool-call turn (no content) records its full duration.
                     llm_ended = first_token_at or time.perf_counter()
@@ -531,6 +556,11 @@ class Agent:
                 self.last_action = action
                 return
 
+            if _cancel_requested(cancel):
+                # Interrupted before the tool turn was committed: skip it whole.
+                self._close_cancelled(trace, content)
+                return
+
             # Record the assistant's tool-call turn, then answer each call.
             self.messages.append({
                 "role": "assistant",
@@ -545,19 +575,42 @@ class Agent:
                     for tc in tool_calls
                 ],
             })
-            batch_action = self._run_tool_calls(tool_calls, trace, user_text)
+            batch_action = self._run_tool_calls(tool_calls, trace, user_text, cancel)
             if batch_action:
                 action = batch_action
             # loop again so the model can speak given the tool results
 
-    def _run_tool_calls(self, tool_calls, trace: TurnTrace, user_text: str) -> str | None:
-        """Execute one batch of tool calls; return the batch's control action."""
+    def _close_cancelled(self, trace: TurnTrace, spoken: str) -> None:
+        """Barge-in bookkeeping: history keeps only what the caller heard."""
+        spoken = spoken.strip()
+        if spoken:
+            self.messages.append({"role": "assistant", "content": spoken})
+        trace.event("turn.cancelled", reason="barge_in", spokenChars=len(spoken))
+        self.last_action = None
+
+    def _run_tool_calls(self, tool_calls, trace: TurnTrace, user_text: str,
+                        cancel=None) -> str | None:
+        """Execute one batch of tool calls; return the batch's control action.
+
+        Once the assistant tool-call turn is committed, every call id MUST get
+        a tool response (OpenAI history invariant). A barge-in mid-batch never
+        interrupts a running tool; the not-yet-started ones get synthetic
+        cancelled responses instead.
+        """
         action: str | None = None
         for tc in tool_calls:
                 try:
                     args = json.loads(tc.function.arguments or "{}")
                 except json.JSONDecodeError:
                     args = {}
+                if _cancel_requested(cancel):
+                    trace.event("tool.cancelled", tool=tc.function.name)
+                    self.messages.append({
+                        "role": "tool",
+                        "tool_call_id": tc.id,
+                        "content": "Cancelled: the caller interrupted before this tool ran.",
+                    })
+                    continue
                 trace.event("tool.requested", tool=tc.function.name, arguments=args)
                 with trace.span("tools", tool=tc.function.name):
                     if tc.function.name == "set_language":

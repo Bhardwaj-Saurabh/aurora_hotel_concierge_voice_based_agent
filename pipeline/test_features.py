@@ -204,6 +204,103 @@ class StreamingRespondTests(unittest.TestCase):
         self.assertIsNone(action)
 
 
+class BargeInCancellationTests(unittest.TestCase):
+    def _many_chunk_provider(self):
+        class ManyChunks(MockProvider):
+            def __init__(self):
+                super().__init__()
+                self.chunks_served = 0
+                self.stream_closed = False
+
+            def stream_chat(self, messages, tools=None, tool_choice=None):
+                try:
+                    for i in range(10):
+                        self.chunks_served += 1
+                        yield _stream_chunk(content=f"piece{i} ")
+                finally:
+                    self.stream_closed = True
+
+        return ManyChunks()
+
+    def test_cancel_mid_stream_truncates_history_to_what_was_spoken(self):
+        import threading
+
+        provider = self._many_chunk_provider()
+        agent = Agent(provider)
+        cancel = threading.Event()
+        trace = TurnTrace(session_id="t", turn_id="barge-1")
+        heard = []
+        for piece in agent.respond_stream("Hello", trace=trace, cancel=cancel):
+            heard.append(piece)
+            if len(heard) == 2:
+                cancel.set()          # caller starts talking over the agent
+        self.assertEqual(heard, ["piece0 ", "piece1 "])
+        self.assertTrue(provider.stream_closed)          # stop paying for tokens
+        self.assertLess(provider.chunks_served, 10)
+        self.assertEqual(agent.messages[-1]["role"], "assistant")
+        self.assertEqual(agent.messages[-1]["content"], "piece0 piece1")
+        self.assertIn("turn.cancelled", [e["name"] for e in trace.events])
+        self.assertIsNone(agent.last_action)
+
+    def test_cancel_before_first_model_call_makes_no_request(self):
+        import threading
+
+        provider = self._many_chunk_provider()
+        agent = Agent(provider)
+        cancel = threading.Event()
+        cancel.set()
+        pieces = list(agent.respond_stream("Hello", cancel=cancel))
+        self.assertEqual(pieces, [])
+        self.assertEqual(provider.chunks_served, 0)
+
+    def test_cancel_mid_tool_batch_keeps_history_openai_valid(self):
+        import threading
+
+        class TwoToolProvider(MockProvider):
+            def __init__(self):
+                super().__init__()
+                self.turns = 0
+
+            def stream_chat(self, messages, tools=None, tool_choice=None):
+                self.turns += 1
+                if self.turns == 1:
+                    yield _stream_chunk(tool_calls=[
+                        _tool_call_delta(0, call_id="c1", name="search_hotel_knowledge",
+                                         arguments='{"query": "pets"}'),
+                        _tool_call_delta(1, call_id="c2", name="get_room_service_hours",
+                                         arguments="{}"),
+                    ])
+                else:
+                    yield _stream_chunk(content="reply")
+
+        provider = TwoToolProvider()
+        agent = Agent(provider)
+        cancel = threading.Event()
+        trace = TurnTrace(session_id="t", turn_id="barge-2")
+
+        original = agent._run_tool_calls
+
+        def cancel_after_first(tool_calls, tr, user_text, cancel_event=None):
+            cancel.set()  # interruption arrives while tools are running
+            return original(tool_calls, tr, user_text, cancel_event)
+
+        agent._run_tool_calls = cancel_after_first
+        pieces = list(agent.respond_stream("pets and room service?", trace=trace, cancel=cancel))
+        self.assertEqual(pieces, [])                     # never spoke
+        self.assertEqual(provider.turns, 1)              # no follow-up LLM call
+        tool_messages = [m for m in agent.messages if m.get("role") == "tool"]
+        tool_call_ids = {"c1", "c2"}
+        self.assertEqual({m["tool_call_id"] for m in tool_messages[-2:]}, tool_call_ids)
+
+    def test_unset_cancel_event_changes_nothing(self):
+        import threading
+
+        provider = self._many_chunk_provider()
+        agent = Agent(provider)
+        pieces = list(agent.respond_stream("Hello", cancel=threading.Event()))
+        self.assertEqual(len(pieces), 10)
+
+
 class KnowledgeSnapshotTests(unittest.TestCase):
     def _snapshot_root(self):
         import json

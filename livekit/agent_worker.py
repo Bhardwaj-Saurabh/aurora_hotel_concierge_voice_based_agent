@@ -28,6 +28,7 @@ from __future__ import annotations
 import asyncio
 import os
 import sys
+import threading
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
@@ -92,27 +93,48 @@ class AuroraRoomAgent(agents.Agent):
         trace.event("input.room_audio")
         loop = asyncio.get_running_loop()
         queue: asyncio.Queue = asyncio.Queue()
+        cancel = threading.Event()  # barge-in signal into the brain (goal.md 3.3)
+
+        def put(item) -> None:
+            try:
+                loop.call_soon_threadsafe(queue.put_nowait, item)
+            except RuntimeError:
+                pass  # event loop already gone (cancelled turn during shutdown)
 
         def produce() -> None:
+            # The producer owns the trace: it is the last to touch it whether
+            # the turn completes, fails, or is cancelled by a barge-in.
             try:
-                for piece in self._brain.respond_stream(user_text, trace=trace):
-                    loop.call_soon_threadsafe(queue.put_nowait, piece)
+                for piece in self._brain.respond_stream(
+                    user_text, trace=trace, cancel=cancel
+                ):
+                    put(piece)
             except Exception as exc:  # respond_stream falls back internally
-                loop.call_soon_threadsafe(queue.put_nowait, exc)
+                put(exc)
             finally:
-                loop.call_soon_threadsafe(queue.put_nowait, _STREAM_END)
+                write_trace(trace.finish(
+                    action=self._brain.last_action,
+                    sources=self._brain.last_sources,
+                ))
+                put(_STREAM_END)
 
         producer = loop.run_in_executor(None, produce)
-        while True:
-            item = await queue.get()
-            if item is _STREAM_END:
-                break
-            if isinstance(item, Exception):
-                raise item
-            yield item
+        try:
+            while True:
+                item = await queue.get()
+                if item is _STREAM_END:
+                    break
+                if isinstance(item, Exception):
+                    raise item
+                yield item
+        except (asyncio.CancelledError, GeneratorExit):
+            # Framework barge-in: stop the brain too — no zombie turn keeps
+            # consuming provider tokens or running tools for a reply nobody
+            # will hear.
+            cancel.set()
+            raise
         await producer
         action = self._brain.last_action
-        write_trace(trace.finish(action=action, sources=self._brain.last_sources))
         if action in ("transfer", "hangup"):
             self._schedule_finish(action)
 
