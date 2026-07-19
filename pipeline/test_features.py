@@ -129,6 +129,81 @@ class RetrievalTests(unittest.TestCase):
         self.assertIn("tool.route_selected", [event["name"] for event in trace.events])
 
 
+def _stream_chunk(content=None, tool_calls=None):
+    from types import SimpleNamespace as NS
+    return NS(choices=[NS(delta=NS(content=content, tool_calls=tool_calls))])
+
+
+def _tool_call_delta(index, call_id=None, name=None, arguments=None):
+    from types import SimpleNamespace as NS
+    return NS(index=index, id=call_id, function=NS(name=name, arguments=arguments))
+
+
+class StreamingRespondTests(unittest.TestCase):
+    def test_content_streams_incrementally_with_first_token_event(self):
+        class StreamingProvider(MockProvider):
+            def stream_chat(self, messages, tools=None, tool_choice=None):
+                yield _stream_chunk(content="You can cancel ")
+                yield _stream_chunk(content="until 6 PM.")
+
+        agent = Agent(StreamingProvider())
+        trace = TurnTrace(session_id="t", turn_id="stream-1")
+        pieces = list(agent.respond_stream("Hello", trace=trace))
+        self.assertEqual(pieces, ["You can cancel ", "until 6 PM."])
+        self.assertIn("llm.first_token", [e["name"] for e in trace.events])
+        self.assertIsNone(agent.last_action)
+
+    def test_streamed_tool_calls_assemble_execute_then_stream_reply(self):
+        class ToolStreamingProvider(MockProvider):
+            def __init__(self):
+                super().__init__()
+                self.calls = 0
+
+            def stream_chat(self, messages, tools=None, tool_choice=None):
+                self.calls += 1
+                if self.calls == 1:
+                    yield _stream_chunk(tool_calls=[_tool_call_delta(
+                        0, call_id="call_1", name="search_hotel_knowledge",
+                        arguments='{"query": "pet',
+                    )])
+                    yield _stream_chunk(tool_calls=[_tool_call_delta(
+                        0, arguments=' policy"}',
+                    )])
+                else:
+                    yield _stream_chunk(content="Two dogs are ")
+                    yield _stream_chunk(content="allowed per room.")
+
+        agent = Agent(ToolStreamingProvider())
+        trace = TurnTrace(session_id="t", turn_id="stream-2")
+        reply = "".join(agent.respond_stream("What is the pet policy?", trace=trace))
+        self.assertEqual(reply, "Two dogs are allowed per room.")
+        requested = [
+            e["attributes"].get("tool") for e in trace.events
+            if e["name"] == "tool.requested"
+        ]
+        self.assertIn("search_hotel_knowledge", requested)
+        self.assertIn("hotel_policies.md#Pets", agent.last_sources[0])
+
+    def test_mid_stream_failure_yields_spoken_fallback(self):
+        class DyingStreamProvider(MockProvider):
+            def stream_chat(self, messages, tools=None, tool_choice=None):
+                yield _stream_chunk(content="Let me ")
+                raise ConnectionError("stream died")
+
+        agent = Agent(DyingStreamProvider())
+        trace = TurnTrace(session_id="t", turn_id="stream-3")
+        pieces = list(agent.respond_stream("Hello", trace=trace))
+        self.assertIn("trouble", "".join(pieces).lower())
+        self.assertIn("llm.fallback", [e["name"] for e in trace.events])
+
+    def test_respond_joins_the_stream_for_non_streaming_callers(self):
+        # MockProvider has no stream_chat: the fallback path must behave as before.
+        agent = Agent(MockProvider())
+        reply, action = agent.respond("What is the pet policy?")
+        self.assertIn("two dogs", reply.lower())
+        self.assertIsNone(action)
+
+
 class KnowledgeSnapshotTests(unittest.TestCase):
     def _snapshot_root(self):
         import json

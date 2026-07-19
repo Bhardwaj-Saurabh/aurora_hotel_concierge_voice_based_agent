@@ -58,31 +58,35 @@ class LatestUserTextTests(unittest.TestCase):
         self.assertEqual(agent_worker._latest_user_text(_chat_ctx()), "")
 
 
+def _speak_all(agent, ctx) -> str:
+    """Consume llm_node's async stream the way the framework's TTS does."""
+    async def collect():
+        return [piece async for piece in agent.llm_node(ctx, [], None)]
+
+    return "".join(asyncio.run(collect()))
+
+
 class RoomAgentAdapterTests(unittest.TestCase):
     def test_llm_node_answers_through_the_pipeline_brain(self):
         agent = _room_agent()
-        reply = asyncio.run(
-            agent.llm_node(_chat_ctx(("user", "What is the pet policy?")), [], None)
-        )
+        reply = _speak_all(agent, _chat_ctx(("user", "What is the pet policy?")))
         self.assertIn("two dogs", reply.lower())
         self.assertEqual(agent.finished_with, [])
 
     def test_llm_node_schedules_teardown_on_hangup(self):
         agent = _room_agent()
-        reply = asyncio.run(agent.llm_node(_chat_ctx(("user", "Goodbye")), [], None))
+        reply = _speak_all(agent, _chat_ctx(("user", "Goodbye")))
         self.assertTrue(reply)
         self.assertEqual(agent.finished_with, ["hangup"])
 
     def test_llm_node_schedules_teardown_on_transfer(self):
         agent = _room_agent()
-        asyncio.run(agent.llm_node(_chat_ctx(("user", "Connect me to a person")), [], None))
+        _speak_all(agent, _chat_ctx(("user", "Connect me to a person")))
         self.assertEqual(agent.finished_with, ["transfer"])
 
     def test_language_switch_flows_through_the_brain(self):
         agent = _room_agent()
-        reply = asyncio.run(
-            agent.llm_node(_chat_ctx(("user", "Please speak Spanish.")), [], None)
-        )
+        reply = _speak_all(agent, _chat_ctx(("user", "Please speak Spanish.")))
         self.assertIn("Claro", reply)
 
 

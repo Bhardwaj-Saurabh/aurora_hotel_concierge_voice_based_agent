@@ -115,6 +115,22 @@ class Provider:
             temperature=0.3,
         )
 
+    def stream_chat(self, messages: list[dict], tools: list[dict] | None = None,
+                    tool_choice=None):
+        """One chat turn as a stream of raw SDK chunks (goal.md 3.2).
+
+        The agent yields content deltas to TTS as they arrive; MockProvider has
+        no stream_chat, so the offline path uses chat() unchanged.
+        """
+        return self.client.chat.completions.create(
+            model=self.llm_model,
+            messages=messages,
+            tools=tools or None,
+            tool_choice=(tool_choice or "auto") if tools else None,
+            temperature=0.3,
+            stream=True,
+        )
+
     # --- STT ---
     def transcribe(self, pcm_int16: bytes, sample_rate: int = 16000) -> str:
         """Transcribe raw 16-bit mono PCM via Whisper."""

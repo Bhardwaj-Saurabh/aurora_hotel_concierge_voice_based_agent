@@ -43,10 +43,10 @@ from livekit.plugins import silero
 from agent import Agent as AuroraBrain  # noqa: E402  (pipeline)
 from env_loader import load_env_files  # noqa: E402
 from providers import DEFAULT_STT_PROMPT, PRESETS, make_provider  # noqa: E402
-from spoken_text import normalize_spoken_text  # noqa: E402
 from telemetry import TurnTrace, write_trace  # noqa: E402
 
 GREETING = "Thanks for calling Aurora Hotel reservations. How can I help?"
+_STREAM_END = object()  # sentinel closing the brain→TTS delta queue
 
 
 def _require_live_provider(name: str) -> None:
@@ -78,19 +78,43 @@ class AuroraRoomAgent(agents.Agent):
         self._session_id = session_id
         self._turn = 0
 
-    async def llm_node(self, chat_ctx, tools, model_settings) -> str:
+    async def llm_node(self, chat_ctx, tools, model_settings):
+        """Stream the brain's reply into the framework's TTS (goal.md 3.2).
+
+        `respond_stream` yields content deltas as the provider streams them;
+        the framework sentence-batches into TTS, so first audio starts before
+        the full reply exists. Markdown is filtered by the session's default
+        tts_text_transforms.
+        """
         user_text = _latest_user_text(chat_ctx)
         self._turn += 1
         trace = TurnTrace(session_id=self._session_id, turn_id=f"turn-{self._turn}")
         trace.event("input.room_audio")
         loop = asyncio.get_running_loop()
-        reply, action = await loop.run_in_executor(
-            None, lambda: self._brain.respond(user_text, trace)
-        )
+        queue: asyncio.Queue = asyncio.Queue()
+
+        def produce() -> None:
+            try:
+                for piece in self._brain.respond_stream(user_text, trace=trace):
+                    loop.call_soon_threadsafe(queue.put_nowait, piece)
+            except Exception as exc:  # respond_stream falls back internally
+                loop.call_soon_threadsafe(queue.put_nowait, exc)
+            finally:
+                loop.call_soon_threadsafe(queue.put_nowait, _STREAM_END)
+
+        producer = loop.run_in_executor(None, produce)
+        while True:
+            item = await queue.get()
+            if item is _STREAM_END:
+                break
+            if isinstance(item, Exception):
+                raise item
+            yield item
+        await producer
+        action = self._brain.last_action
         write_trace(trace.finish(action=action, sources=self._brain.last_sources))
         if action in ("transfer", "hangup"):
             self._schedule_finish(action)
-        return normalize_spoken_text(reply)
 
     def _schedule_finish(self, action: str) -> None:
         try:

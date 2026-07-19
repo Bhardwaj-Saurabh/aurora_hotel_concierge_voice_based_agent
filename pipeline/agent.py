@@ -15,8 +15,10 @@ from __future__ import annotations
 
 import json
 import re
+import time
 import unicodedata
 from difflib import SequenceMatcher
+from types import SimpleNamespace as NS
 
 from bookings import (
     ROOMS as _ROOMS,
@@ -365,18 +367,33 @@ class Agent:
         self.current_locale = LANGUAGES["en"]["locale"]
         self.last_trace: TurnTrace | None = None
         self.last_sources: list[str] = []
+        self.last_action: str | None = None
         self._consecutive_llm_failures = 0
 
     def respond(self, user_text: str, trace: TurnTrace | None = None) -> tuple[str, str | None]:
         """Take the caller's transcript, return (spoken_reply, action|None).
 
+        Joins the streaming path (goal.md 3.2), so text mode, the HTTP bridge,
+        the smoke test, and every eval gate the streaming refactor by
+        construction.
+        """
+        reply = "".join(self.respond_stream(user_text, trace=trace))
+        return reply, self.last_action
+
+    def respond_stream(self, user_text: str, trace: TurnTrace | None = None):
+        """Yield the spoken reply incrementally; the final control action lands
+        in `self.last_action`.
+
         Loops until the model produces a plain text reply, executing any tool
-        calls in between. `action` is the last control signal seen (transfer/
-        hangup), which the voice loop uses to end the call.
+        calls in between. With a streaming provider (`stream_chat`), content
+        deltas are yielded as they arrive so TTS can start before the full
+        reply exists; the `llm` timing then records time-to-first-token — the
+        latency that matters for voice.
         """
         trace = trace or TurnTrace()
         self.last_trace = trace
         self.last_sources = []
+        self.last_action = None
 
         with trace.span("routing"):
             route = self.router.route()
@@ -409,19 +426,75 @@ class Agent:
         first_model_call = True
 
         while True:
+            tool_choice = (
+                _named_tool_choice(required_tool)
+                if first_model_call and required_tool
+                else None
+            )
+            stream_fn = getattr(self.provider, "stream_chat", None)
+            content_parts: list[str] = []
             try:
-                with trace.span("llm", model=getattr(self.provider, "llm_model", "unknown")):
-                    tool_choice = (
-                        _named_tool_choice(required_tool)
-                        if first_model_call and required_tool
-                        else None
+                if stream_fn is None:
+                    # Batch path (MockProvider and any non-streaming backend).
+                    with trace.span("llm", model=getattr(self.provider, "llm_model", "unknown")):
+                        resp = self.provider.chat(
+                            self.messages,
+                            tools=TOOLS,
+                            tool_choice=tool_choice,
+                        )
+                    msg = resp.choices[0].message
+                    content = msg.content or ""
+                    tool_calls = list(msg.tool_calls or [])
+                    if content and not tool_calls:
+                        content_parts.append(content)
+                        yield content
+                else:
+                    # Streaming path (goal.md 3.2): yield content deltas as they
+                    # arrive; assemble tool-call fragments by index.
+                    llm_started = time.perf_counter()
+                    assembled: dict[int, dict] = {}
+                    first_token_at = None
+                    for chunk in stream_fn(self.messages, tools=TOOLS, tool_choice=tool_choice):
+                        delta = chunk.choices[0].delta
+                        for tc_delta in (getattr(delta, "tool_calls", None) or []):
+                            entry = assembled.setdefault(
+                                tc_delta.index, {"id": None, "name": "", "arguments": ""}
+                            )
+                            if getattr(tc_delta, "id", None):
+                                entry["id"] = tc_delta.id
+                            function = getattr(tc_delta, "function", None)
+                            if function is not None:
+                                if getattr(function, "name", None):
+                                    entry["name"] = function.name
+                                if getattr(function, "arguments", None):
+                                    entry["arguments"] += function.arguments
+                        piece = getattr(delta, "content", None)
+                        if piece:
+                            if first_token_at is None:
+                                first_token_at = time.perf_counter()
+                                trace.event(
+                                    "llm.first_token",
+                                    ttftMs=round((first_token_at - llm_started) * 1000, 1),
+                                )
+                            content_parts.append(piece)
+                            yield piece
+                    # For voice, time-to-first-token IS the llm latency; a pure
+                    # tool-call turn (no content) records its full duration.
+                    llm_ended = first_token_at or time.perf_counter()
+                    trace.set_timing(
+                        "llm",
+                        trace.timings.get("llm", 0.0) + (llm_ended - llm_started) * 1000,
                     )
-                    resp = self.provider.chat(
-                        self.messages,
-                        tools=TOOLS,
-                        tool_choice=tool_choice,
-                    )
-                    first_model_call = False
+                    content = "".join(content_parts)
+                    tool_calls = [
+                        NS(
+                            id=entry["id"] or f"call_{index}",
+                            type="function",
+                            function=NS(name=entry["name"], arguments=entry["arguments"]),
+                        )
+                        for index, entry in sorted(assembled.items())
+                    ]
+                first_model_call = False
             except Exception as exc:
                 # Guaranteed fallback (goal.md 2.2): never crash the call, never
                 # dead-end the caller. One bad turn re-prompts; two transfer.
@@ -441,22 +514,27 @@ class Agent:
                     reply = FALLBACK_RETRY_MESSAGES.get(
                         self.current_language, FALLBACK_RETRY_MESSAGES["en"]
                     )
-                self.messages.append({"role": "assistant", "content": reply})
-                trace.event("assistant.response", text=reply, action=action)
-                return reply, action
+                # History keeps whatever was already spoken plus the fallback.
+                spoken = " ".join(
+                    part for part in ("".join(content_parts), reply) if part
+                ).strip()
+                self.messages.append({"role": "assistant", "content": spoken})
+                trace.event("assistant.response", text=spoken, action=action)
+                self.last_action = action
+                yield reply
+                return
             self._consecutive_llm_failures = 0
-            msg = resp.choices[0].message
 
-            if not msg.tool_calls:
-                reply = msg.content or ""
-                self.messages.append({"role": "assistant", "content": reply})
-                trace.event("assistant.response", text=reply, action=action)
-                return reply, action
+            if not tool_calls:
+                self.messages.append({"role": "assistant", "content": content})
+                trace.event("assistant.response", text=content, action=action)
+                self.last_action = action
+                return
 
             # Record the assistant's tool-call turn, then answer each call.
             self.messages.append({
                 "role": "assistant",
-                "content": msg.content or "",
+                "content": content,
                 "tool_calls": [
                     {
                         "id": tc.id,
@@ -464,10 +542,18 @@ class Agent:
                         "function": {"name": tc.function.name,
                                      "arguments": tc.function.arguments},
                     }
-                    for tc in msg.tool_calls
+                    for tc in tool_calls
                 ],
             })
-            for tc in msg.tool_calls:
+            batch_action = self._run_tool_calls(tool_calls, trace, user_text)
+            if batch_action:
+                action = batch_action
+            # loop again so the model can speak given the tool results
+
+    def _run_tool_calls(self, tool_calls, trace: TurnTrace, user_text: str) -> str | None:
+        """Execute one batch of tool calls; return the batch's control action."""
+        action: str | None = None
+        for tc in tool_calls:
                 try:
                     args = json.loads(tc.function.arguments or "{}")
                 except json.JSONDecodeError:
@@ -538,4 +624,4 @@ class Agent:
                     "tool_call_id": tc.id,
                     "content": result["result"],
                 })
-            # loop again so the model can speak given the tool results
+        return action
