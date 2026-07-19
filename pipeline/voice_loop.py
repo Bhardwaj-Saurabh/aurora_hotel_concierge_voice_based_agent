@@ -19,7 +19,7 @@ import subprocess
 import tempfile
 import uuid
 
-from agent import Agent
+from agent import Agent, FALLBACK_RETRY_MESSAGES, FALLBACK_TRANSFER_MESSAGES
 from providers import make_provider
 from telemetry import TurnTrace, format_trace, write_trace
 
@@ -86,12 +86,39 @@ def play_wav_bytes(wav: bytes) -> None:
         subprocess.run([os.getenv("AUDIO_PLAYER_CMD", "afplay"), f.name], check=False)
 
 
-def speak(provider: Provider, text: str) -> None:
-    """Speak `text`: cloud TTS returns audio, or the provider handles playback."""
+def speak(provider, text: str, trace: TurnTrace | None = None) -> None:
+    """Speak `text`: cloud TTS returns audio, or the provider handles playback.
+
+    A TTS failure never crashes the call (goal.md 2.2): fall back to the local
+    system voice; the text is already printed either way.
+    """
     print(f"agent> {text}")
-    audio = provider.synthesize(text)
+    try:
+        audio = provider.synthesize(text)
+    except Exception as exc:
+        if trace:
+            trace.event("tts.fallback", errorType=type(exc).__name__)
+        subprocess.run([os.getenv("SYSTEM_TTS_CMD", "say"), text], check=False)
+        return
     if audio:
         play_wav_bytes(audio)
+
+
+def stt_failure_response(consecutive_failures: int, language: str) -> tuple[str, bool]:
+    """Fallback for a failed transcription: (spoken message, should_transfer).
+
+    First failure re-prompts the caller; the second hands off to a human
+    (goal.md 2.2: never dead-end a caller).
+    """
+    if consecutive_failures >= 2:
+        return (
+            FALLBACK_TRANSFER_MESSAGES.get(language, FALLBACK_TRANSFER_MESSAGES["en"]),
+            True,
+        )
+    return (
+        FALLBACK_RETRY_MESSAGES.get(language, FALLBACK_RETRY_MESSAGES["en"]),
+        False,
+    )
 
 
 # --- The loop ---
@@ -105,6 +132,7 @@ def run(text_mode: bool) -> None:
 
     speak(provider, "Thanks for calling Aurora Hotel reservations. How can I help?")
 
+    stt_failures = 0
     while True:
         try:
             if text_mode:
@@ -115,8 +143,26 @@ def run(text_mode: bool) -> None:
                 trace = TurnTrace(session_id=session_id)
                 with trace.span("capture"):
                     pcm = record_utterance(trace)
-                with trace.span("stt", model=getattr(provider, "stt_model", "unknown")):
-                    user_text = provider.transcribe(pcm, SAMPLE_RATE)
+                try:
+                    with trace.span("stt", model=getattr(provider, "stt_model", "unknown")):
+                        user_text = provider.transcribe(pcm, SAMPLE_RATE)
+                    stt_failures = 0
+                except Exception as exc:
+                    stt_failures += 1
+                    trace.event(
+                        "stt.fallback",
+                        errorType=type(exc).__name__,
+                        consecutiveFailures=stt_failures,
+                    )
+                    message, should_transfer = stt_failure_response(
+                        stt_failures, agent.current_language
+                    )
+                    speak(provider, message, trace)
+                    write_trace(trace.finish(action="transfer" if should_transfer else None))
+                    if should_transfer:
+                        print("[transferring to front desk: SIP REFER to front-desk]")
+                        break
+                    continue
                 print(f"you> {user_text}")
             if not user_text.strip():
                 continue
@@ -124,7 +170,7 @@ def run(text_mode: bool) -> None:
             reply, action = agent.respond(user_text, trace=trace)
 
             with trace.span("tts", model=getattr(provider, "tts_model", "unknown")):
-                speak(provider, reply)
+                speak(provider, reply, trace)
 
             payload = trace.finish(action=action, sources=agent.last_sources)
             write_trace(payload)

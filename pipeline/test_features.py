@@ -129,6 +129,63 @@ class RetrievalTests(unittest.TestCase):
         self.assertIn("tool.route_selected", [event["name"] for event in trace.events])
 
 
+class FailureFallbackTests(unittest.TestCase):
+    class FailingChatProvider(MockProvider):
+        def chat(self, *args, **kwargs):
+            raise ConnectionError("provider unreachable")
+
+    def test_llm_failure_returns_spoken_fallback_not_crash(self):
+        agent = Agent(self.FailingChatProvider())
+        trace = TurnTrace(session_id="t", turn_id="fail-1")
+        reply, action = agent.respond("I need a room for two.", trace=trace)
+        self.assertIn("trouble", reply.lower())
+        self.assertIsNone(action)
+        self.assertIn("llm.fallback", [e["name"] for e in trace.events])
+
+    def test_repeated_llm_failures_transfer_to_human(self):
+        agent = Agent(self.FailingChatProvider())
+        agent.respond("Hello?")
+        reply, action = agent.respond("Hello, are you there?")
+        self.assertEqual(action, "transfer")
+        self.assertIn("front desk", reply.lower())
+
+    def test_llm_success_resets_failure_count(self):
+        agent = Agent(MockProvider())
+        agent._consecutive_llm_failures = 1
+        agent.respond("What is the pet policy?")
+        self.assertEqual(agent._consecutive_llm_failures, 0)
+
+    def test_llm_failure_fallback_speaks_session_language(self):
+        agent = Agent(MockProvider())
+        agent.respond("Please speak Spanish.")
+        agent.provider = self.FailingChatProvider()
+        reply, action = agent.respond("Hola, ¿sigue ahí?")
+        self.assertIn("repetirlo", reply)
+        self.assertIsNone(action)
+
+    def test_tts_failure_falls_back_without_crashing(self):
+        from voice_loop import speak
+
+        class FailingTTSProvider(MockProvider):
+            def synthesize(self, text):
+                raise RuntimeError("tts down")
+
+        trace = TurnTrace(session_id="t", turn_id="tts-1")
+        with patch.dict(os.environ, {"SYSTEM_TTS_CMD": "true"}):
+            speak(FailingTTSProvider(), "Hello caller", trace=trace)  # must not raise
+        self.assertIn("tts.fallback", [e["name"] for e in trace.events])
+
+    def test_stt_failure_reprompts_once_then_transfers(self):
+        from voice_loop import stt_failure_response
+
+        message, transfer = stt_failure_response(1, "en")
+        self.assertIn("trouble", message.lower())
+        self.assertFalse(transfer)
+        message, transfer = stt_failure_response(2, "fr")
+        self.assertIn("réception", message)
+        self.assertTrue(transfer)
+
+
 class BookingBackendTests(unittest.TestCase):
     def _backend(self):
         from bookings import SqliteBookingBackend

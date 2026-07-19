@@ -80,7 +80,14 @@ class Provider:
         if not api_key:
             raise RuntimeError(f"Set {p['api_key_env']} in your .env (PROVIDER={name})")
         from openai import OpenAI  # lazy: the mock path needs no SDK installed
-        self.client = OpenAI(api_key=api_key, base_url=p["base_url"])
+        # Bounded waits + one transport retry (goal.md 2.2); the agent's guaranteed
+        # fallback strings handle whatever still fails after this.
+        self.client = OpenAI(
+            api_key=api_key,
+            base_url=p["base_url"],
+            timeout=float(_env_or_default("PROVIDER_TIMEOUT_S", "30")),
+            max_retries=int(_env_or_default("PROVIDER_MAX_RETRIES", "1")),
+        )
 
         # Per-stage overrides fall back to the preset.
         self.llm_model = _env_or_default("LLM_MODEL", p["llm_model"])
