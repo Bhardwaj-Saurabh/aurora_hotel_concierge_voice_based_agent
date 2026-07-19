@@ -226,6 +226,13 @@ FALLBACK_TRANSFER_MESSAGES = {
     "es": "Sigo teniendo problemas técnicos. Le comunico con la recepción.",
     "fr": "Je rencontre toujours un problème technique. Je vous transfère à la réception.",
 }
+# Spoken while a slow turn is still thinking (goal.md 2.5) so the caller never
+# hears dead air. Short by design: it must not delay the real reply.
+FILLER_MESSAGES = {
+    "en": "One moment.",
+    "es": "Un momento.",
+    "fr": "Un instant.",
+}
 
 # Normalized (accent-stripped) tokens; each set names that language in EN/ES/FR.
 _LANGUAGE_NAMES = {

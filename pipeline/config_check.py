@@ -25,6 +25,7 @@ _NUMERIC_VARS = (
     ("SAMPLE_RATE", int),
     ("PROVIDER_TIMEOUT_S", float),
     ("PROVIDER_MAX_RETRIES", int),
+    ("LATENCY_FILLER_MS", int),
 )
 
 

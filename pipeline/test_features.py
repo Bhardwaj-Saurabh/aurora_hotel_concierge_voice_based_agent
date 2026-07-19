@@ -129,6 +129,59 @@ class RetrievalTests(unittest.TestCase):
         self.assertIn("tool.route_selected", [event["name"] for event in trace.events])
 
 
+class LatencyFillerTests(unittest.TestCase):
+    def test_filler_plays_when_turn_exceeds_threshold(self):
+        import time
+        from voice_loop import LatencyFiller
+
+        spoken = []
+        trace = TurnTrace(session_id="t", turn_id="slow")
+        filler = LatencyFiller(spoken.append, threshold_ms=30)
+        filler.start(trace, "en")
+        time.sleep(0.12)                      # the "slow tool call"
+        filler.stop()
+        self.assertEqual(spoken, ["One moment."])
+        self.assertTrue(filler.played)
+        events = [e["name"] for e in trace.events]
+        self.assertIn("latency.filler_played", events)
+
+    def test_filler_skipped_when_turn_is_fast(self):
+        from voice_loop import LatencyFiller
+
+        spoken = []
+        trace = TurnTrace(session_id="t", turn_id="fast")
+        filler = LatencyFiller(spoken.append, threshold_ms=200)
+        filler.start(trace, "en")
+        filler.stop()                          # turn finished immediately
+        self.assertEqual(spoken, [])
+        self.assertFalse(filler.played)
+        self.assertNotIn("latency.filler_played", [e["name"] for e in trace.events])
+
+    def test_filler_speaks_session_language(self):
+        import time
+        from voice_loop import LatencyFiller
+
+        spoken = []
+        trace = TurnTrace(session_id="t", turn_id="slow-fr")
+        filler = LatencyFiller(spoken.append, threshold_ms=30)
+        filler.start(trace, "fr")
+        time.sleep(0.12)
+        filler.stop()
+        self.assertEqual(spoken, ["Un instant."])
+
+    def test_filler_disabled_with_zero_threshold(self):
+        import time
+        from voice_loop import LatencyFiller
+
+        spoken = []
+        trace = TurnTrace(session_id="t", turn_id="disabled")
+        filler = LatencyFiller(spoken.append, threshold_ms=0)
+        filler.start(trace, "en")
+        time.sleep(0.05)
+        filler.stop()
+        self.assertEqual(spoken, [])
+
+
 class SpokenTextTests(unittest.TestCase):
     def test_markdown_bullets_and_emphasis_stripped(self):
         from spoken_text import normalize_spoken_text

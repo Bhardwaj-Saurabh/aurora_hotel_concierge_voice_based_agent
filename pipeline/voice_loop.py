@@ -17,9 +17,15 @@ import argparse
 import os
 import subprocess
 import tempfile
+import threading
 import uuid
 
-from agent import Agent, FALLBACK_RETRY_MESSAGES, FALLBACK_TRANSFER_MESSAGES
+from agent import (
+    Agent,
+    FALLBACK_RETRY_MESSAGES,
+    FALLBACK_TRANSFER_MESSAGES,
+    FILLER_MESSAGES,
+)
 from providers import make_provider
 from spoken_text import normalize_spoken_text
 from telemetry import TurnTrace, format_trace, write_trace
@@ -113,6 +119,49 @@ def speak(provider, text: str, trace: TurnTrace | None = None) -> None:
         play_wav_bytes(audio)
 
 
+class LatencyFiller:
+    """Speak a short filler if the turn's thinking exceeds a threshold (goal.md 2.5).
+
+    Perceived latency is managed, not just measured: past `threshold_ms` of
+    silence the caller hears "One moment." in the session language while the
+    LLM/tools keep working. Every firing emits `latency.filler_played` — the
+    filler rate is an SLO early-warning signal (fillers spiking = pipeline
+    slowing before p95 shows it).
+    """
+
+    def __init__(self, speak_fn, threshold_ms: int | None = None):
+        self.threshold_ms = (
+            threshold_ms if threshold_ms is not None
+            else int(os.getenv("LATENCY_FILLER_MS", "1200"))
+        )
+        self._speak = speak_fn
+        self._timer: threading.Timer | None = None
+        self.played = False
+
+    def start(self, trace: TurnTrace, language: str) -> None:
+        self.played = False
+        if self.threshold_ms <= 0:
+            return  # disabled
+
+        def _fire() -> None:
+            self.played = True
+            trace.event(
+                "latency.filler_played",
+                thresholdMs=self.threshold_ms,
+                language=language,
+            )
+            self._speak(FILLER_MESSAGES.get(language, FILLER_MESSAGES["en"]))
+
+        self._timer = threading.Timer(self.threshold_ms / 1000, _fire)
+        self._timer.daemon = True
+        self._timer.start()
+
+    def stop(self) -> None:
+        if self._timer is not None:
+            self._timer.cancel()
+            self._timer = None
+
+
 def stt_failure_response(consecutive_failures: int, language: str) -> tuple[str, bool]:
     """Fallback for a failed transcription: (spoken message, should_transfer).
 
@@ -176,7 +225,12 @@ def run(text_mode: bool) -> None:
             if not user_text.strip():
                 continue
 
-            reply, action = agent.respond(user_text, trace=trace)
+            filler = LatencyFiller(lambda text: speak(provider, text, trace))
+            filler.start(trace, agent.current_language)
+            try:
+                reply, action = agent.respond(user_text, trace=trace)
+            finally:
+                filler.stop()
 
             with trace.span("tts", model=getattr(provider, "tts_model", "unknown")):
                 speak(provider, reply, trace)
