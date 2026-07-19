@@ -40,7 +40,7 @@ jobs:
 
       - name: "Gate 4: livekit unit tests"
         working-directory: livekit
-        run: python -m unittest -v test_talk_server.py test_env_loader.py
+        run: python -m unittest -v test_talk_server.py test_env_loader.py test_agent_worker.py
 
   container:
     runs-on: ubuntu-latest

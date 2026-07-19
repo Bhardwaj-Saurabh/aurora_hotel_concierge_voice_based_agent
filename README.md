@@ -169,9 +169,28 @@ Speak while Aurora is playing a response to demonstrate playback barge-in. The b
 
 ### LiveKit Boundary
 
-The caller and Aurora identities are real LiveKit room participants. The current workshop agent processes completed browser audio through `/voice-agent`, returns provider-generated WAV audio when enabled, and otherwise uses browser speech synthesis. It is not yet a room-native agent worker that subscribes to a LiveKit audio track and publishes a TTS track.
+Two agent transports exist:
 
-A production extension would add a LiveKit agent worker, persistent session storage, distributed cancellation, and SIP dispatch.
+- **HTTP turn bridge** (`talk_server.py`, default demo path): the browser records a completed
+  turn and POSTs audio to `/voice-agent`; browser or provider TTS speaks the reply.
+- **Room-native agent worker** (`agent_worker.py`): the agent joins the room as a participant,
+  subscribes to the caller's audio track, runs Silero VAD/turn detection server-side, and
+  publishes Aurora's replies as a TTS audio track. The same pipeline `Agent` powers both — the
+  worker only replaces the transport.
+
+Run the worker against the local server (requires a live provider; the mock cannot hear or speak):
+
+```bash
+cd FDE/Assignment_2_voice_agent/livekit
+source ../.venv/bin/activate
+LIVEKIT_URL=ws://localhost:7880 LIVEKIT_API_KEY=devkey LIVEKIT_API_SECRET=secret \
+python agent_worker.py dev
+```
+
+Then join the room from the browser app; the worker is dispatched automatically.
+
+Remaining production extensions: streaming STT/LLM/TTS (Phase 3.2), distributed barge-in
+cancellation (3.3), and SIP dispatch (3.4).
 
 ## Grounding And Tools
 
