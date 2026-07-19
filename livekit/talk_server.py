@@ -46,6 +46,12 @@ def _agent_provider_name() -> str:
     return os.getenv("PROVIDER", "mock").lower()
 
 
+def _supported_languages() -> list[str]:
+    """Derive from the router so /state can never drift from the agent."""
+    from router import LANGUAGES
+    return sorted(LANGUAGES)
+
+
 def _livekit_url() -> str:
     raw = os.getenv("LIVEKIT_URL", "ws://localhost:7880")
     if raw.startswith("http://"):
@@ -281,7 +287,7 @@ class Handler(SimpleHTTPRequestHandler):
                 "livekitRoom": _livekit_room(),
                 "livekitUrl": _livekit_url(),
                 "agentProvider": _agent_provider_name(),
-                "languages": ["en", "es"],
+                "languages": _supported_languages(),
             })
         if parsed.path != "/token":
             return super().do_GET()

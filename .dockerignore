@@ -1,0 +1,15 @@
+.git
+.github
+.venv
+**/__pycache__
+*.pyc
+logs
+private
+pipeline/.env
+livekit/.env
+livekit/node_modules
+evals
+mocks
+docs
+*.md
+!knowledge/**/*.md

@@ -9,6 +9,12 @@ from contextlib import contextmanager
 from talk_server import _browser_tts_payload
 
 
+class SupportedLanguagesTests(unittest.TestCase):
+    def test_state_languages_follow_the_router(self):
+        import talk_server
+        self.assertEqual(talk_server._supported_languages(), ["en", "es", "fr"])
+
+
 class NormalizedReplyTests(unittest.TestCase):
     def test_finish_response_normalizes_reply_for_speech(self):
         import talk_server
