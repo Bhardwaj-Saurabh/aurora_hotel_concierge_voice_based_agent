@@ -204,6 +204,96 @@ class StreamingRespondTests(unittest.TestCase):
         self.assertIsNone(action)
 
 
+class OtelExportTests(unittest.TestCase):
+    def _finished_payload(self):
+        trace = TurnTrace(session_id="s-1", turn_id="t-1")
+        with trace.span("stt", model="whisper-1"):
+            pass
+        with trace.span("llm", model="gpt-4o-mini"):
+            pass
+        trace.event("llm.first_token", ttftMs=210.0)
+        trace.event("caller.transcript", text="secret words from the caller")
+        trace.attributes.update({"language": "en", "provider": "openai"})
+        return trace.finish(action="hangup", sources=["hotel_policies.md#Pets"])
+
+    def _export(self, payload):
+        from opentelemetry.sdk.trace import TracerProvider
+        from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+        from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
+            InMemorySpanExporter,
+        )
+        from telemetry_otel import export_payload
+
+        exporter = InMemorySpanExporter()
+        provider = TracerProvider()
+        provider.add_span_processor(SimpleSpanProcessor(exporter))
+        export_payload(payload, tracer_provider=provider)
+        return exporter.get_finished_spans()
+
+    def test_turn_maps_to_root_and_stage_spans(self):
+        spans = self._export(self._finished_payload())
+        names = {s.name for s in spans}
+        self.assertIn("voice.turn", names)
+        self.assertIn("voice.stt", names)
+        self.assertIn("voice.llm", names)
+        root = next(s for s in spans if s.name == "voice.turn")
+        self.assertEqual(root.attributes["voice.session_id"], "s-1")
+        self.assertEqual(root.attributes["voice.action"], "hangup")
+        stage = next(s for s in spans if s.name == "voice.llm")
+        self.assertEqual(stage.parent.span_id, root.context.span_id)
+        self.assertGreaterEqual(root.end_time, root.start_time)
+
+    def test_notable_events_land_on_the_root_span(self):
+        spans = self._export(self._finished_payload())
+        root = next(s for s in spans if s.name == "voice.turn")
+        self.assertIn("llm.first_token", {e.name for e in root.events})
+
+    def test_redaction_survives_export(self):
+        spans = self._export(self._finished_payload())
+        blob = repr(spans)
+        self.assertNotIn("secret words", blob)   # content omitted before export
+
+
+class SloReportTests(unittest.TestCase):
+    def _payloads(self):
+        def turn(total, action=None, events=(), timings=None):
+            return {
+                "sessionId": "s", "turnId": "t", "totalMs": total,
+                "timings": timings or {"llm": total / 2},
+                "attributes": {"action": action},
+                "events": [{"name": n, "offsetMs": 0.0, "attributes": {}} for n in events],
+            }
+
+        return [
+            turn(400),
+            turn(500, events=("latency.filler_played",)),
+            turn(600, action="transfer"),
+            turn(700, events=("turn.cancelled",)),
+            turn(3000, action="hangup", events=("llm.fallback",)),
+        ]
+
+    def test_report_computes_percentiles_and_rates(self):
+        from slo_report import compute
+
+        report = compute(self._payloads())
+        self.assertEqual(report["turns"], 5)
+        self.assertEqual(report["p50TotalMs"], 600)
+        self.assertEqual(report["p95TotalMs"], 3000)
+        self.assertAlmostEqual(report["transferRate"], 0.2)
+        self.assertAlmostEqual(report["bargeInRate"], 0.2)
+        self.assertAlmostEqual(report["fillerRate"], 0.2)
+        self.assertAlmostEqual(report["fallbackRate"], 0.2)
+
+    def test_check_mode_flags_slo_breaches(self):
+        from slo_report import breaches
+
+        report = {"p95TotalMs": 3000, "transferRate": 0.2, "fallbackRate": 0.2}
+        found = breaches(report, {"p95TotalMs": 800, "transferRate": 0.5})
+        self.assertEqual(len(found), 1)
+        self.assertIn("p95TotalMs", found[0])
+        self.assertEqual(breaches(report, {"p95TotalMs": 5000}), [])
+
+
 class BargeInCancellationTests(unittest.TestCase):
     def _many_chunk_provider(self):
         class ManyChunks(MockProvider):

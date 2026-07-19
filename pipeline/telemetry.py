@@ -96,11 +96,18 @@ _write_lock = threading.Lock()
 
 
 def write_trace(trace: TurnTrace | dict) -> None:
-    """Append a trace as JSONL when TELEMETRY_JSONL is configured."""
+    """Append a trace as JSONL when TELEMETRY_JSONL is configured, and export
+    to OpenTelemetry when TELEMETRY_OTLP_ENDPOINT is configured (goal.md 4.2)."""
+    payload = trace.to_dict() if isinstance(trace, TurnTrace) else trace
+    if os.getenv("TELEMETRY_OTLP_ENDPOINT", "").strip():
+        try:
+            from telemetry_otel import maybe_export
+            maybe_export(payload)
+        except ImportError:
+            pass  # optional dependency; JSONL remains the source of truth
     destination = os.getenv("TELEMETRY_JSONL", "").strip()
     if not destination:
         return
-    payload = trace.to_dict() if isinstance(trace, TurnTrace) else trace
     path = Path(destination).expanduser()
     path.parent.mkdir(parents=True, exist_ok=True)
     with _write_lock:

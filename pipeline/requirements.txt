@@ -14,3 +14,8 @@ webrtcvad          # voice-activity detection for turn endpointing
 numpy              # audio buffers
 
 # TTS/STT playback + capture use local system commands  -  no extra deps.
+
+# Telemetry mapping to OpenTelemetry spans (goal.md 4.2). The OTLP wire
+# exporter is optional; install it only when exporting to a collector:
+#   pip install opentelemetry-exporter-otlp-proto-http
+opentelemetry-sdk

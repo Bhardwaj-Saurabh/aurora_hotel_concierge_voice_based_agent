@@ -81,6 +81,17 @@ def validate_config(env: Mapping[str, str] | None = None) -> list[str]:
         except OSError as exc:
             problems.append(f"TELEMETRY_JSONL={telemetry!r} is not writable: {exc}")
 
+    otlp = _value(env, "TELEMETRY_OTLP_ENDPOINT")
+    if otlp:
+        try:
+            import opentelemetry.exporter.otlp.proto.http.trace_exporter  # noqa: F401
+            import opentelemetry.sdk.trace  # noqa: F401
+        except ImportError:
+            problems.append(
+                "TELEMETRY_OTLP_ENDPOINT is set but the exporter is missing: "
+                "pip install opentelemetry-sdk opentelemetry-exporter-otlp-proto-http"
+            )
+
     pin = _value(env, "KNOWLEDGE_SNAPSHOT")
     if pin:
         from knowledge import KNOWLEDGE_ROOT, _snapshot_dirs
