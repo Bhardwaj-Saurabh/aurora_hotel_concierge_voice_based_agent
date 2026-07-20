@@ -229,11 +229,12 @@ FALLBACK_TRANSFER_MESSAGES = {
     "fr": "Je rencontre toujours un problème technique. Je vous transfère à la réception.",
 }
 # Spoken while a slow turn is still thinking (goal.md 2.5) so the caller never
-# hears dead air. Short by design: it must not delay the real reply.
+# hears dead air. One short, natural, spoken-friendly sentence — not a bare
+# "one moment" filler word; it must not delay the real reply.
 FILLER_MESSAGES = {
-    "en": "One moment.",
-    "es": "Un momento.",
-    "fr": "Un instant.",
+    "en": "Thanks for waiting, I'm working on that for you.",
+    "es": "Gracias por esperar, estoy trabajando en ello.",
+    "fr": "Merci de patienter, je m'en occupe.",
 }
 
 # Normalized (accent-stripped) tokens; each set names that language in EN/ES/FR.

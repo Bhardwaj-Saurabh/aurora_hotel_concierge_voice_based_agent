@@ -469,7 +469,7 @@ class LatencyFillerTests(unittest.TestCase):
         filler.start(trace, "en")
         time.sleep(0.12)                      # the "slow tool call"
         filler.stop()
-        self.assertEqual(spoken, ["One moment."])
+        self.assertEqual(spoken, ["Thanks for waiting, I'm working on that for you."])
         self.assertTrue(filler.played)
         events = [e["name"] for e in trace.events]
         self.assertIn("latency.filler_played", events)
@@ -496,7 +496,7 @@ class LatencyFillerTests(unittest.TestCase):
         filler.start(trace, "fr")
         time.sleep(0.12)
         filler.stop()
-        self.assertEqual(spoken, ["Un instant."])
+        self.assertEqual(spoken, ["Merci de patienter, je m'en occupe."])
 
     def test_filler_disabled_with_zero_threshold(self):
         import time

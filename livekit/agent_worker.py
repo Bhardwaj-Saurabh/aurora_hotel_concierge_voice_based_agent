@@ -41,7 +41,7 @@ from livekit.agents import AgentSession, JobContext, WorkerOptions, cli, get_job
 from livekit.plugins import openai as openai_plugin
 from livekit.plugins import silero
 
-from agent import Agent as AuroraBrain  # noqa: E402  (pipeline)
+from agent import Agent as AuroraBrain, FILLER_MESSAGES  # noqa: E402  (pipeline)
 from env_loader import load_env_files  # noqa: E402
 from providers import DEFAULT_STT_PROMPT, PRESETS, make_provider  # noqa: E402
 from telemetry import TurnTrace, write_trace  # noqa: E402
@@ -85,7 +85,9 @@ class AuroraRoomAgent(agents.Agent):
         `respond_stream` yields content deltas as the provider streams them;
         the framework sentence-batches into TTS, so first audio starts before
         the full reply exists. Markdown is filtered by the session's default
-        tts_text_transforms.
+        tts_text_transforms. A latency filler (goal.md 2.5) is armed so a
+        tool-heavy turn with no content yet never leaves dead air — this is
+        the room-native counterpart to voice_loop.py's LatencyFiller.
         """
         user_text = _latest_user_text(chat_ctx)
         self._turn += 1
@@ -119,9 +121,22 @@ class AuroraRoomAgent(agents.Agent):
                 put(_STREAM_END)
 
         producer = loop.run_in_executor(None, produce)
+        filler_task = self._arm_latency_filler(queue, trace)
+
+        async def cancel_filler() -> None:
+            nonlocal filler_task
+            if filler_task is not None and not filler_task.done():
+                filler_task.cancel()
+                try:
+                    await filler_task
+                except asyncio.CancelledError:
+                    pass
+            filler_task = None
+
         try:
             while True:
                 item = await queue.get()
+                await cancel_filler()  # real (or filler) content beat the timer
                 if item is _STREAM_END:
                     break
                 if isinstance(item, Exception):
@@ -133,10 +148,28 @@ class AuroraRoomAgent(agents.Agent):
             # will hear.
             cancel.set()
             raise
+        finally:
+            await cancel_filler()
         await producer
         action = self._brain.last_action
         if action in ("transfer", "hangup"):
             self._schedule_finish(action)
+
+    def _arm_latency_filler(self, queue: asyncio.Queue, trace: TurnTrace):
+        """Speak a short filler if no content arrives before LATENCY_FILLER_MS
+        (goal.md 2.5). `0` disables it, matching voice_loop.py's LatencyFiller.
+        """
+        threshold_ms = int(os.getenv("LATENCY_FILLER_MS", "1200"))
+        if threshold_ms <= 0:
+            return None
+        language = self._brain.current_language
+
+        async def fire() -> None:
+            await asyncio.sleep(threshold_ms / 1000)
+            trace.event("latency.filler_played", thresholdMs=threshold_ms, language=language)
+            queue.put_nowait(FILLER_MESSAGES.get(language, FILLER_MESSAGES["en"]) + " ")
+
+        return asyncio.get_running_loop().create_task(fire())
 
     def _schedule_finish(self, action: str) -> None:
         try:

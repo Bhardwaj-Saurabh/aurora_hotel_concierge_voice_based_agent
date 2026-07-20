@@ -142,6 +142,78 @@ class CancellationTests(unittest.TestCase):
         self.assertEqual(agent.finished_with, [])
 
 
+def _collect_pieces(agent, ctx) -> list:
+    async def collect():
+        return [piece async for piece in agent.llm_node(ctx, [], None)]
+
+    return asyncio.run(collect())
+
+
+class WorkerLatencyFillerTests(unittest.TestCase):
+    def _room_agent_with_delay(self, delay_s: float):
+        import time as time_mod
+
+        import agent_worker
+        from agent import Agent
+        from providers import MockProvider
+        from types import SimpleNamespace as NS
+
+        class DelayedStream(MockProvider):
+            def stream_chat(self, messages, tools=None, tool_choice=None):
+                time_mod.sleep(delay_s)
+                yield NS(choices=[NS(delta=NS(content="Two dogs are allowed.",
+                                              tool_calls=None))])
+
+        class Recording(agent_worker.AuroraRoomAgent):
+            def __init__(self):
+                super().__init__(Agent(DelayedStream()), session_id="filler-room")
+                self.finished_with = []
+
+            def _schedule_finish(self, action):
+                self.finished_with.append(action)
+
+        return Recording()
+
+    def test_filler_plays_when_brain_is_slow(self):
+        from unittest.mock import patch
+        import agent_worker
+
+        agent = self._room_agent_with_delay(delay_s=0.1)
+        with patch.dict(os.environ, {"LATENCY_FILLER_MS": "20"}):
+            pieces = _collect_pieces(agent, _chat_ctx(("user", "Any rooms?")))
+        self.assertEqual(pieces[0], agent_worker.FILLER_MESSAGES["en"] + " ")
+        self.assertIn("Two dogs are allowed.", "".join(pieces[1:]))
+
+    def test_no_filler_when_brain_is_fast(self):
+        import agent_worker
+        from unittest.mock import patch
+
+        agent = self._room_agent_with_delay(delay_s=0.0)
+        with patch.dict(os.environ, {"LATENCY_FILLER_MS": "1200"}):
+            pieces = _collect_pieces(agent, _chat_ctx(("user", "Any rooms?")))
+        self.assertNotIn(agent_worker.FILLER_MESSAGES["en"] + " ", pieces)
+
+    def test_filler_disabled_with_zero_threshold(self):
+        from unittest.mock import patch
+
+        agent = self._room_agent_with_delay(delay_s=0.1)
+        with patch.dict(os.environ, {"LATENCY_FILLER_MS": "0"}):
+            pieces = _collect_pieces(agent, _chat_ctx(("user", "Any rooms?")))
+        self.assertEqual("".join(pieces), "Two dogs are allowed.")
+
+    def test_filler_event_traced_and_speaks_session_language(self):
+        from unittest.mock import patch
+        import agent_worker
+
+        agent = self._room_agent_with_delay(delay_s=0.1)
+        agent._brain.router.set_language("fr")  # current_language derives from
+        # the router at each turn's start; setting the attribute directly
+        # would be overwritten by respond_stream's own routing step.
+        with patch.dict(os.environ, {"LATENCY_FILLER_MS": "20"}):
+            pieces = _collect_pieces(agent, _chat_ctx(("user", "Des chambres ?")))
+        self.assertEqual(pieces[0], agent_worker.FILLER_MESSAGES["fr"] + " ")
+
+
 class WorkerConfigTests(unittest.TestCase):
     def test_mock_provider_is_rejected_for_live_rooms(self):
         import agent_worker
