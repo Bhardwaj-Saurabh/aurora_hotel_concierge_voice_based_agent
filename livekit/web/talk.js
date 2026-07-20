@@ -167,12 +167,56 @@ function renderSources(sources) {
     : "No retrieval used in the latest turn.";
 }
 
-function chooseVoice(locale) {
+// Known female system/browser voice names per language (macOS, Chrome, Windows).
+// speechSynthesis has no gender field, so preference is by curated name match.
+const FEMALE_VOICE_HINTS = {
+  en: ["samantha", "karen", "moira", "tessa", "victoria", "allison", "ava",
+       "susan", "zoe", "nicky", "zira", "hazel", "google us english",
+       "google uk english female"],
+  es: ["monica", "mónica", "paulina", "marisol", "angelica", "helena",
+       "sabina", "google español"],
+  fr: ["amelie", "amélie", "audrey", "aurelie", "aurélie", "marie", "julie",
+       "hortense", "google français"],
+};
+
+// getVoices() loads asynchronously and returns [] on the very first call in
+// most browsers; without waiting for it, the greeting plays with no voice set
+// (the browser's own arbitrary default) while later turns pick a different
+// voice once the list has loaded. This resolves once, then every call reuses
+// the cached list.
+let voicesReadyPromise = null;
+function waitForVoices() {
+  if (!("speechSynthesis" in window)) return Promise.resolve([]);
+  const existing = window.speechSynthesis.getVoices();
+  if (existing.length) return Promise.resolve(existing);
+  if (!voicesReadyPromise) {
+    voicesReadyPromise = new Promise((resolve) => {
+      const done = () => resolve(window.speechSynthesis.getVoices());
+      window.speechSynthesis.addEventListener("voiceschanged", done, { once: true });
+      setTimeout(done, 300); // some browsers never fire voiceschanged
+    });
+  }
+  return voicesReadyPromise;
+}
+
+// Resolved once per language and reused for the rest of the call, so the
+// voice can never drift turn-to-turn.
+const chosenVoiceCache = new Map();
+
+async function chooseVoice(locale) {
   if (!("speechSynthesis" in window)) return null;
   const language = locale.toLowerCase().split("-")[0];
-  return window.speechSynthesis.getVoices().find(
-    (voice) => voice.lang.toLowerCase().startsWith(language),
-  ) || null;
+  if (chosenVoiceCache.has(language)) return chosenVoiceCache.get(language);
+
+  const voices = await waitForVoices();
+  const candidates = voices.filter((v) => v.lang.toLowerCase().startsWith(language));
+  const hints = FEMALE_VOICE_HINTS[language] || [];
+  const voice = candidates.find(
+    (v) => hints.some((hint) => v.name.toLowerCase().includes(hint)),
+  ) || candidates[0] || null;
+
+  chosenVoiceCache.set(language, voice); // cache the miss too: never re-search
+  return voice;
 }
 
 function stopAgentPlayback() {
@@ -217,8 +261,14 @@ function finishAgentPlayback(token) {
   }
 }
 
-function speakWithBrowserVoice(text, locale, token) {
+async function speakWithBrowserVoice(text, locale, token) {
   if (!("speechSynthesis" in window) || token !== playbackToken) {
+    finishAgentPlayback(token);
+    return;
+  }
+  const voice = await chooseVoice(locale);
+  if (token !== playbackToken) {
+    // Superseded (barge-in or a new turn) while the voice list was loading.
     finishAgentPlayback(token);
     return;
   }
@@ -226,7 +276,6 @@ function speakWithBrowserVoice(text, locale, token) {
   utterance.lang = locale;
   utterance.rate = 0.98;
   utterance.pitch = 1.0;
-  const voice = chooseVoice(locale);
   if (voice) utterance.voice = voice;
 
   utterance.onstart = () => beginAgentPlayback(token, "browser");
