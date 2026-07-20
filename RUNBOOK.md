@@ -1,363 +1,322 @@
-# Aurora Voice Agent Runbook
+# Aurora Voice Agent — Runbook
 
-This runbook supports a preflighted 45-minute progressive demo and hands-on session after the separate Voice AI presentation. Every stage extends the same Aurora Hotel workflow.
+Operational guide for running, verifying, demoing, and operating Aurora. Every command here
+has been verified against the current code. Architecture and design rationale live in
+`README.md`; the roadmap and ADRs live in `goal.md` (local-only).
 
-The 45-minute clock does not include dependency installation, API-key setup, or microphone permission troubleshooting.
+---
 
-## Preflight
+## 1. Quick Reference
 
-Complete installation before the workshop.
+| Task | Command (from the assignment root) |
+|---|---|
+| Set up once | `uv venv --python 3.12 && source .venv/bin/activate && uv pip install -r pipeline/requirements.txt -r livekit/requirements.txt` |
+| Validate config | `cd pipeline && python config_check.py` |
+| Full offline gates | see §3 (smoke + unit tests + evals + livekit tests) |
+| Talk to Aurora (offline, typed) | `cd pipeline && PROVIDER=mock python voice_loop.py --text` |
+| Talk to Aurora (live, mic) | `cd pipeline && python voice_loop.py` |
+| Browser demo (HTTP bridge) | §5.1 — three terminals |
+| Room-native agent worker | §5.2 — `python agent_worker.py dev` |
+| Run in Docker | §5.3 — `docker build -t aurora-talk-server . && docker run --rm -p 5173:5173 aurora-talk-server` |
+| SLO report | `cd pipeline && python slo_report.py --input ../logs/voice-events.jsonl` |
+| Capacity estimate | `cd pipeline && python scale_check.py --dau 1000000` |
+| SIP/IVR simulations | `cd mocks && python demo_call.py` / `python ivr_menu_mock.py` |
 
-Pipeline:
+---
+
+## 2. Setup
+
+One virtualenv at the assignment root serves both packages (`pipeline/` and `livekit/`):
 
 ```bash
-cd FDE/Assignment_2_voice_agent/pipeline
-python3 -m venv .venv
+cd FDE/Assignment_2_voice_agent
+uv venv --python 3.12
 source .venv/bin/activate
-pip install -r requirements.txt
-cp config.example.env .env
+uv pip install -r pipeline/requirements.txt -r livekit/requirements.txt
+cp pipeline/config.example.env pipeline/.env
 ```
 
-LiveKit:
-
-```bash
-cd ../livekit
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-npm install
-```
-
-For a live OpenAI path, set the following in `pipeline/.env`:
+Key `.env` settings:
 
 ```env
-PROVIDER=openai
-OPENAI_API_KEY=your_key_here
-TTS_BACKEND=system
+PROVIDER=mock                  # mock (offline) | openai | groq
+OPENAI_API_KEY=                # only the selected provider's key is required
+TTS_BACKEND=system             # system = free local voice; provider = cloud TTS ($)
 TELEMETRY_JSONL=../logs/voice-events.jsonl
+BOOKINGS_DB=../logs/bookings.db    # blank = in-memory (bookings vanish on restart)
+ENDPOINT_SILENCE_MS=600        # pause that ends a caller turn
+LATENCY_FILLER_MS=1200         # "One moment." if a turn thinks longer; 0 disables
+KNOWLEDGE_SNAPSHOT=            # blank = newest knowledge/YYYY-MM-DD/; set to roll back
+TELEMETRY_OTLP_ENDPOINT=       # optional OTel collector (see §7.2)
 ```
 
-Use `TTS_BACKEND=system` for the no-cost browser voice. Use
-`TTS_BACKEND=provider` to synthesize the greeting and responses with the
-selected provider's `TTS_MODEL` and `TTS_VOICE`. Restart `talk_server.py` after
-changing this setting.
-
-Use `PROVIDER=mock` in commands when no key is available.
-
-Before the session, confirm the offline checks pass:
+**Validate before running** — config mistakes fail fast with one clear message instead of a
+mid-call stack trace:
 
 ```bash
-cd FDE/Assignment_2_voice_agent/pipeline
-source .venv/bin/activate
-python smoke_test.py
-python -m unittest -v test_features.py
+cd pipeline && python config_check.py
 ```
 
-## Stage 0: Explain The Progressive Build
+Real-mic mode additionally needs PortAudio: `brew install portaudio`. Text mode, evals, the
+browser demo, and the worker need no audio libraries on this machine.
 
-Introduce the system before running commands:
+---
 
-```text
-text
--> LLM and tools
--> RAG and AgentRouter
--> VAD and STT
--> TTS
--> LiveKit room
--> telemetry and evaluation
--> SIP and production scale
-```
+## 3. Offline Verification Gates
 
-Use one booking story through every stage:
-
-```text
-I need a room from August 12 to August 14 for two guests.
-```
-
-## Stage 1: Deterministic Text Agent
+Four suites, all running on the mock provider — no key, no network, < 15 s total. They are
+**green at every commit** and enforced by CI (`.github/workflows/ci.yml`) on every push/PR:
 
 ```bash
-cd FDE/Assignment_2_voice_agent/pipeline
 source .venv/bin/activate
-python smoke_test.py
+(cd pipeline && python smoke_test.py)                                # scripted end-to-end
+(cd pipeline && python -m unittest -v test_features.py)              # 68 unit tests
+(cd evals && python run_evals.py --suite all)                        # 19 scenarios: core + red-team
+(cd livekit && python -m unittest -v test_talk_server.py test_env_loader.py test_agent_worker.py)
+```
+
+Run a single eval suite with conversation detail:
+
+```bash
+cd evals
+python run_evals.py --suite core --verbose
+python run_evals.py --suite red-team --verbose
+```
+
+**The working rule (EDD):** any change to agent behavior — prompt, tools, guardrails, routing,
+knowledge, MockProvider — starts by writing the eval that pins the new behavior, proving it
+fails, then implementing. Never weaken an eval to make it pass.
+
+---
+
+## 4. Talking to Aurora (CLI)
+
+### 4.1 Offline text mode — always works
+
+```bash
+cd pipeline
 PROVIDER=mock python voice_loop.py --text
 ```
 
-Use this booking story:
+Turns worth trying:
 
 ```text
+What is the cancellation policy?          → grounded RAG answer + source
+What are your room service hours?         → get_room_service_hours tool
 I need a room from August 12 to August 14 for two guests.
-Book it for Priya Shah at priya@example.com.
+Book it for Priya Shah at priya@example.com.     → AH-4827, persisted
+Book it again for Priya Shah at priya@example.com. → "already confirmed", same ID (idempotent)
+Should I take out a loan to pay for my stay?     → polite guardrail redirect
+Please speak French. / Quelle est la politique d'annulation ?
+Merci !                                   → must NOT switch languages
+Connect me to the front desk.             → transfer (SIP REFER)
+Goodbye                                   → hangup (SIP BYE)
 ```
 
-Expected evidence:
+### 4.2 Live voice mode (mic)
 
-- Availability comes from `check_availability`.
-- Booking comes from `create_booking`.
-- The confirmation ID is generated by the mock tool, not the model.
-- Text mode exercises the same agent state and tools as voice mode.
-
-## Stage 2: Live Provider With The Same Agent
-
-When a live key is configured:
-
-```bash
-python voice_loop.py --text
-```
-
-No agent code changes. Only the provider configuration changes.
-
-Compare the mock and live paths on tool selection, response variability, latency, and cost.
-
-## Stage 3: Tools, RAG, Guardrails, And Language Routing
-
-### Tools, RAG, And Guardrails
-
-Continue in the live text session from Stage 2:
-
-```text
-What is the weather?
-What is today's FIFA score?
-What is the cancellation policy?
-```
-
-Verify that weather is redirected to hotel reservations and the cancellation answer uses `search_hotel_knowledge` rather than model memory.
-
-The trace should show `tool.route_selected`, `tool.requested`,
-`retrieval.completed`, and `hotel_policies.md#Cancellation`. The application
-forces retrieval for high-confidence hotel-policy intents so a previous
-off-topic refusal cannot prevent grounding.
-
-### Language Routing
-
-Exit text mode, then run the automated routing proof:
-
-```bash
-cd FDE/Assignment_2_voice_agent/evals
-python run_evals.py --suite core --verbose
-```
-
-Locate `router.language_switch`. This test proves that the same session switches to Spanish, preserves the route on the following turn, and still selects the expected business tool.
-
-Language changes use the structured `set_language` control tool. The model
-proposes the caller's intent. Before changing state, `explicit_language_request()`
-requires the current utterance to explicitly name the requested target language.
-`AgentRouter` then validates `en` or `es`, stores the session state, and supplies
-the matching locale to TTS. Accepted changes show `tool.requested | set_language`
-and `router.language_changed`. Rejected implicit changes show
-`router.language_change_rejected` and leave the current language unchanged.
-
-Then run the live provider in text mode:
-
-```bash
-cd ../pipeline
-python voice_loop.py --text
-```
-
-Use these turns in the same session:
-
-```text
-Please speak Spanish.
-Necesito una habitación para dos personas.
-¿Cuál es la política de mascotas?
-Switch back to English.
-¡Gracias!
-What time is check-in?
-```
-
-Expected evidence:
-
-- The pet policy uses `search_hotel_knowledge` after the language switch.
-- The pet-policy source is `hotel_policies.md#Pets`.
-- `AgentRouter` preserves language state across turns.
-- The Spanish route persists until the caller explicitly switches back to English.
-- `¡Gracias!` does not switch the session back to Spanish because it does not request a language change.
-- The final check-in answer is returned in English.
-
-Testing status:
-
-- Automated multi-turn language routing is verified by the core evaluation suite.
-- Local API routing and Spanish RAG are verified.
-- Live browser speech switching remains a manual acoustic check because it depends on the microphone, speakers, and installed browser voices.
-
-## Stage 4: Local Voice Cascade
-
-Use a live provider for real STT:
+Set `PROVIDER=openai` or `groq` with its key, then:
 
 ```bash
 python voice_loop.py
 ```
 
-Speak the same booking request used in text mode. Watch the terminal telemetry for capture, STT, routing, LLM, tools, TTS, and total time.
+Per-turn telemetry prints capture/STT/routing/retrieval/LLM/tools/TTS timings. With a
+streaming provider the `llm` figure is **time-to-first-token**. Slow turns (> `LATENCY_FILLER_MS`)
+say "One moment." in the session language instead of leaving dead air.
 
-Change endpoint behavior between runs:
+### 4.3 Latency baseline experiment
 
-```bash
-ENDPOINT_SILENCE_MS=350 python voice_loop.py
-ENDPOINT_SILENCE_MS=900 python voice_loop.py
-```
+Full protocol, fixed utterances, results template, and extraction snippet:
+`docs/latency-baseline.md` (3 runs × 5 turns across `ENDPOINT_SILENCE_MS` 600/350/900).
 
-Use a sentence with a natural mid-sentence pause. The short threshold demonstrates cutoff risk. The long threshold demonstrates dead air.
+---
 
-## Stage 5: Local LiveKit Room
+## 5. Serving Aurora
 
-Use three terminals.
+### 5.1 Browser demo — HTTP turn bridge (default demo path)
 
-Terminal 1:
-
-```bash
-cd FDE/Assignment_2_voice_agent/livekit
-./start_local_server.sh
-```
-
-Terminal 2:
+Three terminals:
 
 ```bash
-cd FDE/Assignment_2_voice_agent/livekit
-source .venv/bin/activate
+# T1 — local LiveKit server (Docker)
+cd livekit && ./start_local_server.sh
+
+# T2 — room + web app
+cd livekit && source ../.venv/bin/activate
 python create_room.py
 python talk_server.py
+
+# Browser
+open http://localhost:5173     # Start call → allow mic
 ```
 
-Browser:
+The browser does VAD/endpointing and barge-in; completed turns POST to `/voice-agent`.
+Verify: both participants join, policy questions show grounding sources, the language badge
+follows `en/es/fr`, and interrupting Aurora mid-reply records a barge-in without a feedback
+loop.
 
-```text
-http://localhost:5173
-```
+### 5.2 Room-native agent worker (production path)
 
-Click **Start call** once to grant browser microphone access. The application automatically joins Caller Demo and Aurora Agent.
-
-Verify:
-
-- Both participants appear in room state.
-- Caller audio is published.
-- Speaking activates the caller waveform.
-- A pause commits the turn.
-- The transcript shows caller and agent turns.
-- Policy questions show grounding sources.
-- The pipeline and timing panels update.
-- The provider line shows `TTS: <voice>` when provider TTS is enabled, or `Browser TTS` otherwise.
-
-Run this live language sequence:
-
-```text
-Please speak Spanish.
-¿Cuál es la política de cancelación?
-Switch back to English.
-¡Gracias!
-What time is check-in?
-```
-
-Verify that the language badge, response text, selected provider or browser voice, and subsequent turns change together. The Spanish policy turn should show `hotel_policies.md#Cancellation` as its grounding source. After switching to English, `¡Gracias!` must not change the language badge or session route.
-
-## Stage 6: Turn-Taking And Barge-In
-
-Use the browser controls while the call remains connected.
-
-1. Set Endpoint silence to 350 ms and speak with a mid-sentence pause.
-2. Set Endpoint silence to 900 ms and repeat the same sentence.
-3. Restore 650 ms.
-4. Ask for the cancellation policy.
-5. Wait about half a second into Aurora's response.
-6. Interrupt with: `Wait, speak Spanish.`
-7. Ask a second question in Spanish.
-
-Expected evidence:
-
-- Adaptive calibration reports the noise floor and active speech threshold.
-- Lower endpoint silence responds faster but can cut off a caller.
-- Higher endpoint silence preserves pauses but adds delay.
-- Sustained caller speech cancels playback and records a barge-in event.
-- The browser trace shows `barge_in.candidate` followed by `barge_in.detected` for a confirmed interruption.
-- The server trace shows `barge_in.turn_started` on the caller turn created by that interruption.
-- The next caller turn remains in the same session.
-- The Barge-in metric updates once without creating a feedback loop.
-- The next response follows the Spanish route.
-
-The workshop browser demonstrates playback barge-in. A production streaming system must also cancel active model and TTS work across distributed services.
-
-## Stage 7: Telemetry
-
-Inspect the browser runtime trace and the local JSONL file:
+The agent joins the room as a participant: server-side Silero VAD, streaming LLM deltas into
+incremental TTS, and real barge-in cancellation (interruption stops the provider stream and
+tool work, not just playback). Requires a live provider — the mock can neither hear nor speak:
 
 ```bash
-cd FDE/Assignment_2_voice_agent
+# with T1's local server running, and PROVIDER=openai|groq in pipeline/.env
+cd livekit && source ../.venv/bin/activate
+LIVEKIT_URL=ws://localhost:7880 LIVEKIT_API_KEY=devkey LIVEKIT_API_SECRET=secret \
+python agent_worker.py dev
+```
+
+Join the room from the browser app; the worker is dispatched automatically. Expected log:
+`registered worker` on startup, then one trace per turn in the JSONL. On hangup/transfer the
+worker lets the goodbye finish playing, then deletes the room.
+
+### 5.3 Docker
+
+```bash
+docker build -t aurora-talk-server .
+docker run --rm -p 5173:5173 \
+  -e PROVIDER=mock \
+  -e LIVEKIT_URL=ws://host.docker.internal:7880 \
+  aurora-talk-server
+curl http://localhost:5173/state
+```
+
+The image is `python:3.12-slim`, non-root, and installs only `livekit/requirements.txt`
+(the browser does VAD, so no audio C-dependencies). CI builds it and boot-checks `/state`
+on every push.
+
+---
+
+## 6. Behavior Under Failure
+
+Verified by unit tests; every fallback emits a trace event.
+
+| Failure | Behavior |
+|---|---|
+| LLM call fails (timeout/network) | Spoken fallback in the session language: "I'm having trouble… say that again?" (`llm.fallback`) |
+| Two consecutive failed turns | "…connecting you to the front desk." + transfer action (`failure.transfer`) |
+| STT fails | Re-prompt once, transfer on the second consecutive failure (`stt.fallback`) |
+| Provider TTS fails | Local system voice fallback; the call never crashes (`tts.fallback`) |
+| Mid-stream provider death | Partial reply + spoken fallback; history keeps only what was heard |
+| Barge-in during a reply | Provider stream closed (no zombie tokens), running tool never interrupted, remaining tools get synthetic responses, history truncates to what was spoken (`turn.cancelled`) |
+| Bad `.env` | Startup exits with every problem listed; nothing serves |
+| Booking retried | Same confirmation ID, "already confirmed", no duplicate row |
+
+Transport-level resilience: `PROVIDER_TIMEOUT_S=30`, `PROVIDER_MAX_RETRIES=1`.
+
+---
+
+## 7. Operations
+
+### 7.1 Telemetry
+
+Every turn appends a redacted trace to `TELEMETRY_JSONL` (default `logs/voice-events.jsonl`,
+git-ignored). Guest name/contact are redacted; transcript/reply text is omitted unless
+`TELEMETRY_INCLUDE_CONTENT=true` (local debugging only — never with real callers).
+
+```bash
 tail -n 1 logs/voice-events.jsonl | python3 -m json.tool
 ```
 
-Locate:
+### 7.2 OpenTelemetry export
 
-- `sessionId`, `turnId`, and `traceId`
-- Provider, model, language, and locale
-- STT, routing, retrieval, LLM, and tool timings
-- Tool arguments and results
-- Grounding sources
-- Transfer or hangup action
+Set `TELEMETRY_OTLP_ENDPOINT` (e.g. `http://localhost:4318/v1/traces`) and install the wire
+exporter (`pip install opentelemetry-exporter-otlp-proto-http`). Each turn becomes one OTel
+trace: a `voice.turn` root span, per-stage child spans, notable events on the root. Redaction
+happens before export. `config_check.py` flags a configured endpoint with a missing exporter.
 
-The browser also measures end-of-turn to first audio and barge-in detection latency because those events occur at the media client.
-
-Conversation text is omitted and sensitive tool fields are redacted by default. Keep `TELEMETRY_INCLUDE_CONTENT=false` for the workshop.
-
-## Stage 8: Evaluation And Red Teaming
+### 7.3 SLO report — the alert primitive
 
 ```bash
-cd FDE/Assignment_2_voice_agent/evals
-python3 run_evals.py --suite red-team --verbose
+cd pipeline
+python slo_report.py --input ../logs/voice-events.jsonl
+python slo_report.py --input ../logs/voice-events.jsonl \
+  --max-p95-total-ms 800 --max-fallback-rate 0.05 --max-transfer-rate 0.3
 ```
 
-The core suite was already used during language routing. The red-team suite checks prompt injection, policy fabrication, privacy, structured tool input, and multilingual guardrails. Add a new JSON case before changing the prompt or tools so a behavior change has an explicit acceptance criterion.
+Reports p50/p95 total, p95 LLM (TTFT) and STT, and transfer / completed-call / barge-in /
+filler / fallback rates. Any `--max-*` breach exits non-zero — run it in CI or cron. Watch
+`fillerRate` first: fillers spike before p95 does.
 
-## Stage 9: Scale Check
+### 7.4 Bookings
+
+`BOOKINGS_DB` set → durable SQLite with unique confirmation IDs and idempotency keys
+(session + normalized details). Inspect:
 
 ```bash
-cd FDE/Assignment_2_voice_agent/pipeline
-python3 scale_check.py --dau 1000000
+sqlite3 logs/bookings.db 'SELECT confirmation_id, guest_name, check_in, check_out FROM bookings;'
 ```
 
-The default example produces approximately 5,556 peak concurrent calls from explicit assumptions. Change calls per DAU, duration, peak factor, sessions per worker, headroom, and cost per minute before using the result for planning.
+Confirmation IDs are currently a deterministic sequence (`AH-4827`, …) for eval stability —
+swap to non-guessable IDs before real deployment (goal.md 4.4).
+
+### 7.5 Knowledge snapshots
+
+Policies live in date-stamped snapshots; the newest loads by default and the manifest is
+authoritative (unlisted files are not indexed).
+
+**Publish a policy change:**
 
 ```bash
-python3 scale_check.py \
-  --dau 1000000 \
-  --calls-per-dau 0.10 \
-  --duration-minutes 3 \
-  --peak-factor 6 \
-  --cost-per-minute 0.035
+cp -r knowledge/2026-07-19 knowledge/2026-08-01      # copy newest snapshot
+# edit knowledge/2026-08-01/hotel_policies.md, update manifest.json if files changed
+cd evals && python run_evals.py --suite all           # grounding evals must stay green
 ```
 
-## Stage 10: SIP Mapping
+**Roll back a bad edit** — one line in `pipeline/.env`:
+
+```env
+KNOWLEDGE_SNAPSHOT=2026-07-19
+```
+
+An invalid pin is rejected at startup with the available snapshots listed.
+
+### 7.6 Capacity planning
 
 ```bash
-cd FDE/Assignment_2_voice_agent/mocks
-python3 demo_call.py
-python3 demo_call.py --transfer
+cd pipeline && python scale_check.py --dau 1000000 --cost-per-minute 0.035
 ```
 
-Map the local concepts:
+Change every assumption before treating the output as a plan; replace assumptions with
+measured load-test numbers (goal.md 4.3) before production.
 
-```text
-browser caller -> WebRTC participant
-phone caller -> SIP participant
-room -> call session
-audio track -> RTP or SRTP media
-transfer action -> SIP REFER or application routing
-hangup action -> SIP BYE
-public voice edge -> SBC or managed SIP service
-```
+---
 
+## 8. Demo Script (condensed)
 
-## Troubleshooting
+A 20-minute walkthrough of the full system, offline until step 5:
+
+1. **Gates** (§3) — "the whole behavior surface is pinned: 19 scenarios, 68 tests."
+2. **Text session** (§4.1) — grounding with sources, room service tool, **idempotent
+   double-booking**, financial-advice guardrail, French round-trip ending with "Merci !"
+   not switching.
+3. **Failure theater** — stop your network mid-live-call (or show
+   `FailureFallbackTests`): re-prompt → transfer, never silence.
+4. **SLO report** (§7.3) over the traces the demo just generated.
+5. **Live voice** (§4.2 or §5.2) — same brain, now with ears and a mouth; point out TTFT
+   and the latency filler on a slow turn; interrupt Aurora mid-sentence to show barge-in.
+6. **Rollback** (§7.5) — pin last week's policy snapshot, restart, ask the same question.
+
+---
+
+## 9. Troubleshooting
 
 | Symptom | Resolution |
-|---------|------------|
-| Missing provider key | Run with `PROVIDER=mock` or correct `pipeline/.env` |
-| `sounddevice` fails | Install PortAudio or use text mode |
-| UI loads but call cannot connect | Keep `start_local_server.sh` running on port 7880 |
-| Browser has no microphone | Grant permission and verify the Caller Demo mute state |
-| Mock browser ignores spoken words | Mock STT intentionally returns scripted phrases; use a live provider for real transcription |
-| Background noise starts turns | Increase Speech sensitivity |
-| Turn cuts off early | Increase Endpoint silence |
-| Turn feels slow | Decrease Endpoint silence carefully |
-| Provider TTS fails | Use `TTS_BACKEND=system` and restart `talk_server.py` |
-| LiveKit uses the system voice | Set `TTS_BACKEND=provider`, restart `talk_server.py`, and confirm the UI shows the provider voice |
-| Live service fails during class | Return to mock text mode and continue the architecture path |
+|---|---|
+| Startup prints "Configuration problems" | Fix the listed `pipeline/.env` entries; `python config_check.py` re-checks |
+| Missing provider key | Run with `PROVIDER=mock`, or set the key for the selected provider |
+| `sounddevice` fails | `brew install portaudio`, or use `--text` mode |
+| Browser can't connect | Keep `start_local_server.sh` running (port 7880) |
+| Worker won't start with mock | Expected: a live room needs real STT/TTS — set `PROVIDER=openai|groq` |
+| Worker registered but silent on join | Provider key invalid — check T2 logs for STT/TTS auth errors |
+| Mock ignores what you type/say | Mock STT returns scripted phrases by design; the mock LLM is rule-based |
+| Turn cuts off mid-sentence | Raise `ENDPOINT_SILENCE_MS` (e.g. 900) |
+| Replies feel slow | Lower `ENDPOINT_SILENCE_MS` carefully; check `fillerRate` and p95 TTFT in the SLO report |
+| Provider TTS errors | `TTS_BACKEND=system` and restart; the loop also falls back automatically |
+| `pkg_resources is deprecated` warning | Cosmetic (webrtcvad); the `setuptools<81` pin handles it |
+| OTel endpoint set but nothing exports | Install `opentelemetry-exporter-otlp-proto-http`; config_check flags this |
+| Evals fail after a knowledge edit | The eval is doing its job — fix the snapshot or update the eval *as a deliberate product decision* |
+| Live service dies during a demo | Fall back to `PROVIDER=mock --text`; the architecture story survives |
