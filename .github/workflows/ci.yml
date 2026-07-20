@@ -42,20 +42,61 @@ jobs:
         working-directory: livekit
         run: python -m unittest -v test_talk_server.py test_env_loader.py test_agent_worker.py
 
-  container:
+  # Two images, two jobs (ADR-012): the talk-server (web-facing, scales with
+  # HTTP traffic) and the room-native worker (job worker, scales with
+  # concurrent calls) are different deployables with different verification
+  # needs — running them as separate jobs also gives independent pass/fail
+  # signal and runs them in parallel.
+  container-talk-server:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
 
       - name: Build talk-server image
-        run: docker build -t aurora-talk-server .
+        run: docker build -f Dockerfile.talk-server -t aurora-talk-server .
 
-      - name: "Container boots and serves /state"
+      - name: "Talk-server boots and serves /state"
         run: |
-          docker run -d --rm --name aurora -p 5173:5173 aurora-talk-server
+          docker run -d --rm --name aurora-talk-server -p 5173:5173 aurora-talk-server
           for i in $(seq 1 15); do
             curl -fsS http://localhost:5173/state && ok=1 && break || sleep 1
           done
-          docker stop aurora
+          docker stop aurora-talk-server
+          test "$ok" = "1"
+
+  container-worker:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build worker image
+        run: docker build -f Dockerfile.worker -t aurora-agent-worker .
+
+      - name: Start a local LiveKit server for registration
+        run: |
+          docker network create aurora-ci
+          docker run -d --rm --name lk-server --network aurora-ci \
+            -p 7880:7880 -p 7881:7881 -p 7882:7882/udp \
+            livekit/livekit-server:latest --bind 0.0.0.0 --node-ip 127.0.0.1 --dev
+          sleep 3
+
+      - name: "Worker registers with LiveKit and reports healthy"
+        run: |
+          # OPENAI_API_KEY is a placeholder: registration only needs valid
+          # LiveKit credentials, not a working LLM key (no call is placed).
+          docker run -d --rm --name aurora-worker --network aurora-ci -p 8081:8081 \
+            -e PROVIDER=openai -e OPENAI_API_KEY=dummy-key-for-registration \
+            -e LIVEKIT_URL=ws://lk-server:7880 \
+            -e LIVEKIT_API_KEY=devkey -e LIVEKIT_API_SECRET=secret \
+            aurora-agent-worker
+          # GET / on the worker's health port only returns 200 once it has
+          # connected to LiveKit and its job executor is running.
+          for i in $(seq 1 20); do
+            curl -fsS http://localhost:8081/ && ok=1 && break || sleep 1
+          done
+          docker logs aurora-worker
+          docker stop aurora-worker
+          docker stop lk-server
           test "$ok" = "1"

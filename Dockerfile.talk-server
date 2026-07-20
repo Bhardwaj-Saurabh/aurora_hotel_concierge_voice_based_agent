@@ -1,0 +1,39 @@
+# Aurora talk server (goal.md 4.1, ADR-012) — the web-facing surface: LiveKit
+# token minting + the HTTP turn bridge (/agent, /voice-agent). This is a
+# distinct deployable from the room-native agent worker (Dockerfile.worker):
+# it scales with browser/API traffic, not concurrent calls, and needs no
+# audio stack at all — the browser does VAD/capture. Installs
+# requirements-server.txt (NOT the full livekit/requirements.txt), which
+# deliberately excludes livekit-agents/silero — that pulls in ~70MB of
+# onnxruntime this process never touches.
+#
+#   docker build -f Dockerfile.talk-server -t aurora-talk-server .
+#   docker run --rm -p 5173:5173 \
+#     -e PROVIDER=mock \                     # or openai/groq + the API key
+#     -e LIVEKIT_URL=ws://host.docker.internal:7880 \
+#     aurora-talk-server
+
+FROM python:3.12-slim
+
+WORKDIR /app
+
+COPY livekit/requirements-server.txt livekit/requirements-server.txt
+RUN pip install --no-cache-dir -r livekit/requirements-server.txt
+
+COPY pipeline/ pipeline/
+COPY knowledge/ knowledge/
+COPY livekit/ livekit/
+
+ENV PROVIDER=mock \
+    TALK_HOST=0.0.0.0 \
+    TALK_PORT=5173 \
+    TELEMETRY_JSONL=/app/logs/voice-events.jsonl \
+    BOOKINGS_DB=/app/logs/bookings.db
+
+EXPOSE 5173
+
+# Never run as root; logs dir is the only writable path the app needs.
+RUN mkdir -p /app/logs && useradd --create-home aurora && chown -R aurora /app/logs
+USER aurora
+
+CMD ["python", "livekit/talk_server.py"]

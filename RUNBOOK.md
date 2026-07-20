@@ -17,7 +17,7 @@ has been verified against the current code. Architecture and design rationale li
 | Talk to Aurora (live, mic) | `cd pipeline && python voice_loop.py` |
 | Browser demo (HTTP bridge) | §5.1 — three terminals |
 | Room-native agent worker | §5.2 — `python agent_worker.py dev` |
-| Run in Docker | §5.3 — `docker build -t aurora-talk-server . && docker run --rm -p 5173:5173 aurora-talk-server` |
+| Run in Docker | §5.3 — two images: `docker build -f Dockerfile.talk-server ...` and `-f Dockerfile.worker ...` |
 | SLO report | `cd pipeline && python slo_report.py --input ../logs/voice-events.jsonl` |
 | Capacity estimate | `cd pipeline && python scale_check.py --dau 1000000` |
 | SIP/IVR simulations | `cd mocks && python demo_call.py` / `python ivr_menu_mock.py` |
@@ -175,8 +175,13 @@ worker lets the goodbye finish playing, then deletes the room.
 
 ### 5.3 Docker
 
+Two images, because they're two different deployables (a web-facing service vs. a LiveKit job
+worker with no public API) — see `goal.md` ADR-012.
+
+**Talk server** (HTTP bridge — §5.1):
+
 ```bash
-docker build -t aurora-talk-server .
+docker build -f Dockerfile.talk-server -t aurora-talk-server .
 docker run --rm -p 5173:5173 \
   -e PROVIDER=mock \
   -e LIVEKIT_URL=ws://host.docker.internal:7880 \
@@ -184,9 +189,27 @@ docker run --rm -p 5173:5173 \
 curl http://localhost:5173/state
 ```
 
-The image is `python:3.12-slim`, non-root, and installs only `livekit/requirements.txt`
-(the browser does VAD, so no audio C-dependencies). CI builds it and boot-checks `/state`
-on every push.
+`python:3.12-slim`, non-root, installs only `livekit/requirements-server.txt` — no Silero/VAD
+weight, since the browser does capture on this path.
+
+**Room-native worker** (§5.2) — needs a live provider and a reachable LiveKit server:
+
+```bash
+docker build -f Dockerfile.worker -t aurora-agent-worker .
+docker run --rm -p 8081:8081 \
+  -e PROVIDER=openai -e OPENAI_API_KEY=... \
+  -e LIVEKIT_URL=wss://your-project.livekit.cloud \
+  -e LIVEKIT_API_KEY=... -e LIVEKIT_API_SECRET=... \
+  aurora-agent-worker
+curl http://localhost:8081/    # "OK" once connected to LiveKit — the health probe
+```
+
+No `EXPOSE`d application port — the worker registers with LiveKit and receives room dispatches;
+port 8081 is only the orchestrator health/liveness endpoint. Run a pool of these; scale by
+concurrent call volume, not HTTP traffic.
+
+CI builds and boot-verifies both images independently (`container-talk-server`,
+`container-worker`); the worker job spins up a real local LiveKit server to prove registration.
 
 ---
 

@@ -1,0 +1,8 @@
+# Talk server ONLY (goal.md 4.1, ADR-012): token minting + the HTTP turn
+# bridge (/agent, /voice-agent). Deliberately excludes livekit-agents/silero —
+# the browser does VAD/capture here, so this process needs no audio stack.
+# For local development, keep installing the full livekit/requirements.txt
+# (it's a superset); this file exists only to keep the talk-server *image*
+# slim. See livekit/requirements.txt for the room-native worker's deps.
+livekit-api
+openai>=1.30
