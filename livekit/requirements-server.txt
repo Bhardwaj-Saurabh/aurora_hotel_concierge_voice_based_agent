@@ -18,3 +18,12 @@ argon2-cffi>=23.1
 # back to the local SYSTEM_PROMPT constant with no OPIK_API_KEY set), but
 # config_check.py fails fast if the key is set without this installed.
 opik
+
+# OTLP trace export (goal.md ADR-009/ADR-019). Only pipeline/requirements.txt
+# had these before — this talk-server image never installed that file, so
+# setting TELEMETRY_OTLP_ENDPOINT made config_check.py's existing fail-fast
+# check crash the app at boot (caught by live deployment, not the offline
+# gates, since those don't set TELEMETRY_OTLP_ENDPOINT). Required whenever
+# TELEMETRY_OTLP_ENDPOINT is set, e.g. to export to Opik.
+opentelemetry-sdk
+opentelemetry-exporter-otlp-proto-http
