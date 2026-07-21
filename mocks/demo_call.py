@@ -13,14 +13,11 @@ real phone  -  it's the "watch a whole call happen" demo for the SIP segment.
 
 import argparse
 import os
-import sys
 
-# Reach the pipeline package (agent + mock provider) from mocks/.
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "pipeline"))
 os.environ["PROVIDER"] = "mock"  # force the offline backend
 
-from agent import Agent            # noqa: E402
-from providers import make_provider  # noqa: E402
+from aurora.core.agent import Agent  # noqa: E402
+from aurora.core.providers import make_provider  # noqa: E402
 
 CALL_ID = "9c8b7a6d-0f1e-2d3c-4b5a-60718293a4b5@203.0.113.10"
 CALLER = "+15551230000"

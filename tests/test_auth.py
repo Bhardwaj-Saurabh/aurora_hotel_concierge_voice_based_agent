@@ -35,7 +35,7 @@ class _AuthBackendContractTests:
         self.assertEqual(logged_in_id, user_id)
 
     def test_duplicate_email_is_rejected(self):
-        from auth import AuthValidationError
+        from aurora.storage.auth import AuthValidationError
         backend = self._backend()
         backend.register_user("guest@example.com", "correct horse battery")
         with self.assertRaises(AuthValidationError):
@@ -51,13 +51,13 @@ class _AuthBackendContractTests:
         self.assertIsNone(backend.verify_credentials("nobody@example.com", "whatever"))
 
     def test_password_too_short_is_rejected(self):
-        from auth import AuthValidationError
+        from aurora.storage.auth import AuthValidationError
         backend = self._backend()
         with self.assertRaises(AuthValidationError):
             backend.register_user("guest@example.com", "short")
 
     def test_malformed_email_is_rejected(self):
-        from auth import AuthValidationError
+        from aurora.storage.auth import AuthValidationError
         backend = self._backend()
         with self.assertRaises(AuthValidationError):
             backend.register_user("not-an-email", "correct horse battery")
@@ -112,7 +112,7 @@ class _AuthBackendContractTests:
 
 class SqliteAuthBackendTests(_AuthBackendContractTests, unittest.TestCase):
     def _backend(self):
-        from auth import SqliteAuthBackend
+        from aurora.storage.auth import SqliteAuthBackend
         return SqliteAuthBackend(":memory:")
 
 
@@ -132,7 +132,7 @@ class PostgresAuthBackendTests(_AuthBackendContractTests, unittest.TestCase):
     SESSIONS_TABLE = "auth_sessions_contract_test"
 
     def _backend(self):
-        from auth import PostgresAuthBackend
+        from aurora.storage.auth import PostgresAuthBackend
         backend = PostgresAuthBackend(
             host=os.environ["POSTGRES_HOST"],
             port=int(os.getenv("POSTGRES_PORT", "5432")),
@@ -146,7 +146,7 @@ class PostgresAuthBackendTests(_AuthBackendContractTests, unittest.TestCase):
         return backend
 
     def setUp(self):
-        from auth import PostgresAuthBackend
+        from aurora.storage.auth import PostgresAuthBackend
         probe = PostgresAuthBackend(
             host=os.environ["POSTGRES_HOST"],
             port=int(os.getenv("POSTGRES_PORT", "5432")),
@@ -168,8 +168,8 @@ class TimingSafeLoginTests(unittest.TestCase):
 
     def test_unknown_email_still_runs_a_hash_verification(self):
         from unittest.mock import patch
-        import auth
-        from auth import SqliteAuthBackend
+        from aurora.storage import auth
+        from aurora.storage.auth import SqliteAuthBackend
 
         backend = SqliteAuthBackend(":memory:")
         backend.register_user("guest@example.com", "correct horse battery")

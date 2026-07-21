@@ -110,7 +110,7 @@ def run(base_url: str, accounts: int, requests: int, concurrency: int, password:
     }
 
     print("Disabling test accounts...")
-    from auth import get_auth_backend
+    from aurora.storage.auth import get_auth_backend
     backend = get_auth_backend()
     by_email = {u["email"]: u["id"] for u in backend.list_users()}
     for email in emails:

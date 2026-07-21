@@ -22,26 +22,19 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
-          cache-dependency-path: |
-            pipeline/requirements.txt
-            livekit/requirements.txt
+          cache-dependency-path: pyproject.toml
 
       - name: Install dependencies
-        run: |
-          python -m pip install -r pipeline/requirements.txt -r livekit/requirements.txt
-          python -m pip install -e .
+        run: python -m pip install -e ".[server,worker,dev]"
 
       - name: "Gate 1: smoke test (offline end-to-end)"
-        working-directory: pipeline
-        run: python smoke_test.py
+        run: python -m aurora.ops.smoke
 
       - name: "Gate 2: pipeline unit tests"
-        working-directory: pipeline
-        run: python -m unittest -v test_features.py test_auth.py test_rate_limit.py test_prompt_registry.py
+        run: python -m unittest -v tests.test_features tests.test_auth tests.test_rate_limit tests.test_prompt_registry
 
       - name: "Gate 3: eval suites (core + red team)"
-        working-directory: evals
-        run: python run_evals.py --suite all
+        run: python evals/run_evals.py --suite all
 
       - name: "Gate 4: livekit unit tests"
         working-directory: livekit

@@ -17,12 +17,12 @@ except ModuleNotFoundError:
 os.environ["PROVIDER"] = "mock"
 os.environ.setdefault("TTS_BACKEND", "print")
 
-from agent import Agent, explicit_language_request, required_tool_for
-from knowledge import search_hotel_knowledge
-from providers import MockProvider, _env_or_default, _mk_tool, make_provider
-from router import AgentRouter
-from scale_check import estimate_capacity
-from telemetry import TurnTrace
+from aurora.core.agent import Agent, explicit_language_request, required_tool_for
+from aurora.core.knowledge import search_hotel_knowledge
+from aurora.core.providers import MockProvider, _env_or_default, _mk_tool, make_provider
+from aurora.core.router import AgentRouter
+from aurora.ops.scale_check import estimate_capacity
+from aurora.telemetry.traces import TurnTrace
 
 
 class RouterTests(unittest.TestCase):
@@ -230,7 +230,7 @@ class OtelExportTests(unittest.TestCase):
         from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
             InMemorySpanExporter,
         )
-        from telemetry_otel import export_payload
+        from aurora.telemetry.otel import export_payload
 
         exporter = InMemorySpanExporter()
         provider = TracerProvider()
@@ -268,11 +268,11 @@ class OtlpHeadersParsingTests(unittest.TestCase):
     (Authorization, projectName, Comet-Workspace)."""
 
     def test_empty_string_yields_no_headers(self):
-        from telemetry_otel import _parse_otlp_headers
+        from aurora.telemetry.otel import _parse_otlp_headers
         self.assertEqual(_parse_otlp_headers(""), {})
 
     def test_parses_multiple_key_value_pairs(self):
-        from telemetry_otel import _parse_otlp_headers
+        from aurora.telemetry.otel import _parse_otlp_headers
         raw = "Authorization=secret-key,projectName=aurora-hotel,Comet-Workspace=my-workspace"
         self.assertEqual(_parse_otlp_headers(raw), {
             "Authorization": "secret-key",
@@ -281,7 +281,7 @@ class OtlpHeadersParsingTests(unittest.TestCase):
         })
 
     def test_tolerates_surrounding_whitespace(self):
-        from telemetry_otel import _parse_otlp_headers
+        from aurora.telemetry.otel import _parse_otlp_headers
         raw = " Authorization = secret-key , projectName = aurora-hotel "
         self.assertEqual(_parse_otlp_headers(raw), {
             "Authorization": "secret-key",
@@ -289,14 +289,14 @@ class OtlpHeadersParsingTests(unittest.TestCase):
         })
 
     def test_value_may_itself_contain_an_equals_sign(self):
-        from telemetry_otel import _parse_otlp_headers
+        from aurora.telemetry.otel import _parse_otlp_headers
         self.assertEqual(
             _parse_otlp_headers("Authorization=abc=def"),
             {"Authorization": "abc=def"},
         )
 
     def test_malformed_entry_without_equals_is_skipped(self):
-        from telemetry_otel import _parse_otlp_headers
+        from aurora.telemetry.otel import _parse_otlp_headers
         self.assertEqual(_parse_otlp_headers("not-well-formed,projectName=x"), {"projectName": "x"})
 
 
@@ -319,7 +319,7 @@ class SloReportTests(unittest.TestCase):
         ]
 
     def test_report_computes_percentiles_and_rates(self):
-        from slo_report import compute
+        from aurora.ops.slo_report import compute
 
         report = compute(self._payloads())
         self.assertEqual(report["turns"], 5)
@@ -331,7 +331,7 @@ class SloReportTests(unittest.TestCase):
         self.assertAlmostEqual(report["fallbackRate"], 0.2)
 
     def test_check_mode_flags_slo_breaches(self):
-        from slo_report import breaches
+        from aurora.ops.slo_report import breaches
 
         report = {"p95TotalMs": 3000, "transferRate": 0.2, "fallbackRate": 0.2}
         found = breaches(report, {"p95TotalMs": 800, "transferRate": 0.5})
@@ -460,24 +460,24 @@ class KnowledgeSnapshotTests(unittest.TestCase):
         return root
 
     def test_latest_snapshot_wins(self):
-        from knowledge import KnowledgeBase
+        from aurora.core.knowledge import KnowledgeBase
         kb = KnowledgeBase(self._snapshot_root())
         self.assertEqual(kb.snapshot, "2026-02-02")
         self.assertIn("$99", kb.search("parking")[0]["text"])
 
     def test_pinned_snapshot_rolls_back(self):
-        from knowledge import KnowledgeBase
+        from aurora.core.knowledge import KnowledgeBase
         kb = KnowledgeBase(self._snapshot_root(), snapshot="2026-01-01")
         self.assertEqual(kb.snapshot, "2026-01-01")
         self.assertIn("$10", kb.search("parking")[0]["text"])
 
     def test_invalid_pin_raises_clearly(self):
-        from knowledge import KnowledgeBase
+        from aurora.core.knowledge import KnowledgeBase
         with self.assertRaises(ValueError):
             KnowledgeBase(self._snapshot_root(), snapshot="1999-01-01")
 
     def test_manifest_is_authoritative(self):
-        from knowledge import KnowledgeBase
+        from aurora.core.knowledge import KnowledgeBase
         root = self._snapshot_root()
         (root / "2026-02-02" / "rogue.md").write_text(
             "## Secret\n\nRogue unreviewed content about parking.\n", encoding="utf-8"
@@ -488,7 +488,7 @@ class KnowledgeSnapshotTests(unittest.TestCase):
     def test_loose_files_still_work_without_snapshots(self):
         import tempfile
         from pathlib import Path
-        from knowledge import KnowledgeBase
+        from aurora.core.knowledge import KnowledgeBase
 
         root = Path(tempfile.mkdtemp())
         (root / "hotel_policies.md").write_text(
@@ -500,14 +500,14 @@ class KnowledgeSnapshotTests(unittest.TestCase):
         self.assertIn("$28", kb.search("parking")[0]["text"])
 
     def test_repo_knowledge_loads_from_a_snapshot(self):
-        from knowledge import KNOWLEDGE_BASE
+        from aurora.core.knowledge import KNOWLEDGE_BASE
         self.assertNotEqual(KNOWLEDGE_BASE.snapshot, "unversioned")
 
 
 class LatencyFillerTests(unittest.TestCase):
     def test_filler_plays_when_turn_exceeds_threshold(self):
         import time
-        from voice_loop import LatencyFiller
+        from aurora.voice.loop import LatencyFiller
 
         spoken = []
         trace = TurnTrace(session_id="t", turn_id="slow")
@@ -521,7 +521,7 @@ class LatencyFillerTests(unittest.TestCase):
         self.assertIn("latency.filler_played", events)
 
     def test_filler_skipped_when_turn_is_fast(self):
-        from voice_loop import LatencyFiller
+        from aurora.voice.loop import LatencyFiller
 
         spoken = []
         trace = TurnTrace(session_id="t", turn_id="fast")
@@ -534,7 +534,7 @@ class LatencyFillerTests(unittest.TestCase):
 
     def test_filler_speaks_session_language(self):
         import time
-        from voice_loop import LatencyFiller
+        from aurora.voice.loop import LatencyFiller
 
         spoken = []
         trace = TurnTrace(session_id="t", turn_id="slow-fr")
@@ -546,7 +546,7 @@ class LatencyFillerTests(unittest.TestCase):
 
     def test_filler_disabled_with_zero_threshold(self):
         import time
-        from voice_loop import LatencyFiller
+        from aurora.voice.loop import LatencyFiller
 
         spoken = []
         trace = TurnTrace(session_id="t", turn_id="disabled")
@@ -559,7 +559,7 @@ class LatencyFillerTests(unittest.TestCase):
 
 class SpokenTextTests(unittest.TestCase):
     def test_markdown_bullets_and_emphasis_stripped(self):
-        from spoken_text import normalize_spoken_text
+        from aurora.core.spoken_text import normalize_spoken_text
         raw = "- **Check-in** is at 3 PM\n- Check-out is at `11 AM`"
         self.assertEqual(
             normalize_spoken_text(raw),
@@ -567,7 +567,7 @@ class SpokenTextTests(unittest.TestCase):
         )
 
     def test_numbered_lists_and_headers_stripped(self):
-        from spoken_text import normalize_spoken_text
+        from aurora.core.spoken_text import normalize_spoken_text
         raw = "## Hours\n1. Breakfast at 6:30 AM\n2. Dinner at 5 PM"
         self.assertEqual(
             normalize_spoken_text(raw),
@@ -575,7 +575,7 @@ class SpokenTextTests(unittest.TestCase):
         )
 
     def test_em_dashes_become_commas_but_word_hyphens_survive(self):
-        from spoken_text import normalize_spoken_text
+        from aurora.core.spoken_text import normalize_spoken_text
         raw = "Parking — $28 per night — includes in-room check-in"
         self.assertEqual(
             normalize_spoken_text(raw),
@@ -583,26 +583,26 @@ class SpokenTextTests(unittest.TestCase):
         )
 
     def test_markdown_links_keep_only_the_label(self):
-        from spoken_text import normalize_spoken_text
+        from aurora.core.spoken_text import normalize_spoken_text
         self.assertEqual(
             normalize_spoken_text("See [our policies](https://example.com/p)."),
             "See our policies.",
         )
 
     def test_whitespace_collapsed(self):
-        from spoken_text import normalize_spoken_text
+        from aurora.core.spoken_text import normalize_spoken_text
         self.assertEqual(
             normalize_spoken_text("Hello   there\n\n  caller"),
             "Hello there caller",
         )
 
     def test_chunk_short_text_is_single_chunk(self):
-        from spoken_text import chunk_text
+        from aurora.core.spoken_text import chunk_text
         self.assertEqual(chunk_text("Welcome to Aurora."), ["Welcome to Aurora."])
         self.assertEqual(chunk_text(""), [])
 
     def test_chunk_splits_at_sentence_boundaries_under_limit(self):
-        from spoken_text import chunk_text
+        from aurora.core.spoken_text import chunk_text
         text = " ".join(f"Sentence number {i} is here." for i in range(1, 21))
         chunks = chunk_text(text, max_chars=80)
         self.assertGreater(len(chunks), 1)
@@ -611,13 +611,13 @@ class SpokenTextTests(unittest.TestCase):
         self.assertEqual(" ".join(chunks), text)
 
     def test_chunk_hard_splits_oversized_sentence(self):
-        from spoken_text import chunk_text
+        from aurora.core.spoken_text import chunk_text
         text = "word " * 100
         chunks = chunk_text(text.strip(), max_chars=40)
         self.assertTrue(all(len(c) <= 40 for c in chunks))
 
     def test_speak_normalizes_before_tts(self):
-        from voice_loop import speak
+        from aurora.voice.loop import speak
 
         class RecordingTTSProvider(MockProvider):
             def __init__(self):
@@ -635,18 +635,18 @@ class SpokenTextTests(unittest.TestCase):
 
 class PostgresConfigCheckTests(unittest.TestCase):
     def test_no_postgres_host_is_fine(self):
-        from config_check import validate_config
+        from aurora.config.check import validate_config
         self.assertEqual(validate_config({"PROVIDER": "mock"}), [])
 
     def test_postgres_host_requires_user_password_db(self):
-        from config_check import validate_config
+        from aurora.config.check import validate_config
         problems = validate_config({"PROVIDER": "mock", "POSTGRES_HOST": "db.example.com"})
         self.assertTrue(any("POSTGRES_USER" in p for p in problems))
         self.assertTrue(any("POSTGRES_PASSWORD" in p for p in problems))
         self.assertTrue(any("POSTGRES_DB" in p for p in problems))
 
     def test_fully_configured_postgres_passes(self):
-        from config_check import validate_config
+        from aurora.config.check import validate_config
         problems = validate_config({
             "PROVIDER": "mock",
             "POSTGRES_HOST": "db.example.com",
@@ -657,7 +657,7 @@ class PostgresConfigCheckTests(unittest.TestCase):
         self.assertEqual(problems, [])
 
     def test_bad_postgres_port_flagged(self):
-        from config_check import validate_config
+        from aurora.config.check import validate_config
         problems = validate_config({
             "PROVIDER": "mock",
             "POSTGRES_HOST": "db.example.com",
@@ -671,7 +671,7 @@ class EnvFilePermissionsTests(unittest.TestCase):
     def test_world_readable_env_file_flagged(self):
         import tempfile
         from pathlib import Path
-        from config_check import check_env_file_permissions
+        from aurora.config.check import check_env_file_permissions
 
         with tempfile.NamedTemporaryFile(suffix=".env", delete=False) as f:
             path = Path(f.name)
@@ -686,7 +686,7 @@ class EnvFilePermissionsTests(unittest.TestCase):
     def test_owner_only_env_file_passes(self):
         import tempfile
         from pathlib import Path
-        from config_check import check_env_file_permissions
+        from aurora.config.check import check_env_file_permissions
 
         with tempfile.NamedTemporaryFile(suffix=".env", delete=False) as f:
             path = Path(f.name)
@@ -698,36 +698,36 @@ class EnvFilePermissionsTests(unittest.TestCase):
 
     def test_missing_env_file_is_not_a_problem(self):
         from pathlib import Path
-        from config_check import check_env_file_permissions
+        from aurora.config.check import check_env_file_permissions
         self.assertEqual(check_env_file_permissions(Path("/nonexistent/.env")), [])
 
 
 class ConfigCheckTests(unittest.TestCase):
     def test_mock_provider_needs_no_keys(self):
-        from config_check import validate_config
+        from aurora.config.check import validate_config
         self.assertEqual(validate_config({"PROVIDER": "mock"}), [])
 
     def test_bad_livekit_token_ttl_flagged(self):
-        from config_check import validate_config
+        from aurora.config.check import validate_config
         problems = validate_config({
             "PROVIDER": "mock", "LIVEKIT_TOKEN_TTL_MINUTES": "not-a-number",
         })
         self.assertTrue(any("LIVEKIT_TOKEN_TTL_MINUTES" in p for p in problems))
 
     def test_invalid_provider_flagged(self):
-        from config_check import validate_config
+        from aurora.config.check import validate_config
         problems = validate_config({"PROVIDER": "banana"})
         self.assertTrue(any("PROVIDER" in p for p in problems))
 
     def test_malformed_otlp_headers_flagged(self):
-        from config_check import validate_config
+        from aurora.config.check import validate_config
         problems = validate_config({
             "PROVIDER": "mock", "TELEMETRY_OTLP_HEADERS": "no-equals-sign-here",
         })
         self.assertTrue(any("TELEMETRY_OTLP_HEADERS" in p for p in problems))
 
     def test_well_formed_otlp_headers_pass(self):
-        from config_check import validate_config
+        from aurora.config.check import validate_config
         problems = validate_config({
             "PROVIDER": "mock",
             "TELEMETRY_OTLP_HEADERS": "Authorization=key,projectName=aurora-hotel",
@@ -735,26 +735,26 @@ class ConfigCheckTests(unittest.TestCase):
         self.assertFalse(any("TELEMETRY_OTLP_HEADERS" in p for p in problems))
 
     def test_opik_api_key_without_the_package_installed_is_flagged(self):
-        from config_check import validate_config
+        from aurora.config.check import validate_config
         with patch.dict("sys.modules", {"opik": None}):
             problems = validate_config({"PROVIDER": "mock", "OPIK_API_KEY": "fake-key"})
         self.assertTrue(any("OPIK_API_KEY" in p for p in problems))
 
     def test_no_opik_api_key_is_fine_without_the_package(self):
-        from config_check import validate_config
+        from aurora.config.check import validate_config
         with patch.dict("sys.modules", {"opik": None}):
             problems = validate_config({"PROVIDER": "mock"})
         self.assertFalse(any("OPIK_API_KEY" in p for p in problems))
 
     def test_live_provider_requires_matching_key(self):
-        from config_check import validate_config
+        from aurora.config.check import validate_config
         problems = validate_config({"PROVIDER": "openai"})
         self.assertTrue(any("OPENAI_API_KEY" in p for p in problems))
         problems = validate_config({"PROVIDER": "groq", "GROQ_API_KEY": "gsk-x"})
         self.assertEqual(problems, [])
 
     def test_unwritable_telemetry_path_flagged(self):
-        from config_check import validate_config
+        from aurora.config.check import validate_config
         problems = validate_config({
             "PROVIDER": "mock",
             "TELEMETRY_JSONL": "/dev/null/nested/voice-events.jsonl",
@@ -762,7 +762,7 @@ class ConfigCheckTests(unittest.TestCase):
         self.assertTrue(any("TELEMETRY_JSONL" in p for p in problems))
 
     def test_unopenable_bookings_db_flagged(self):
-        from config_check import validate_config
+        from aurora.config.check import validate_config
         problems = validate_config({
             "PROVIDER": "mock",
             "BOOKINGS_DB": "/dev/null/nested/bookings.db",
@@ -770,12 +770,12 @@ class ConfigCheckTests(unittest.TestCase):
         self.assertTrue(any("BOOKINGS_DB" in p for p in problems))
 
     def test_bad_numeric_flagged(self):
-        from config_check import validate_config
+        from aurora.config.check import validate_config
         problems = validate_config({"PROVIDER": "mock", "ENDPOINT_SILENCE_MS": "fast"})
         self.assertTrue(any("ENDPOINT_SILENCE_MS" in p for p in problems))
 
     def test_bad_tts_backend_flagged(self):
-        from config_check import validate_config
+        from aurora.config.check import validate_config
         problems = validate_config({"PROVIDER": "mock", "TTS_BACKEND": "cloud"})
         self.assertTrue(any("TTS_BACKEND" in p for p in problems))
 
@@ -815,7 +815,7 @@ class FailureFallbackTests(unittest.TestCase):
         self.assertIsNone(action)
 
     def test_tts_failure_falls_back_without_crashing(self):
-        from voice_loop import speak
+        from aurora.voice.loop import speak
 
         class FailingTTSProvider(MockProvider):
             def synthesize(self, text):
@@ -827,7 +827,7 @@ class FailureFallbackTests(unittest.TestCase):
         self.assertIn("tts.fallback", [e["name"] for e in trace.events])
 
     def test_stt_failure_reprompts_once_then_transfers(self):
-        from voice_loop import stt_failure_response
+        from aurora.voice.loop import stt_failure_response
 
         message, transfer = stt_failure_response(1, "en")
         self.assertIn("trouble", message.lower())
@@ -879,7 +879,7 @@ class _BookingBackendContractTests:
         # fixed-format random code instead, using an alphabet with confusable
         # characters removed (0/O, 1/I/L) so it can be spoken and heard
         # correctly over a phone call.
-        from bookings import _CONFIRMATION_ALPHABET, _CONFIRMATION_CODE_LENGTH
+        from aurora.storage.bookings import _CONFIRMATION_ALPHABET, _CONFIRMATION_CODE_LENGTH
         backend = self._backend()
         confirmation = backend.create_booking(**self._details()).confirmation_id
         self.assertTrue(confirmation.startswith("AH-"))
@@ -900,20 +900,20 @@ class _BookingBackendContractTests:
         self.assertEqual(len(codes), 25)
 
     def test_checkout_before_checkin_rejected(self):
-        from bookings import BookingValidationError
+        from aurora.storage.bookings import BookingValidationError
         backend = self._backend()
         with self.assertRaises(BookingValidationError):
             backend.create_booking(**self._details(check_in="August 14",
                                                    check_out="August 12"))
 
     def test_guests_over_capacity_rejected(self):
-        from bookings import BookingValidationError
+        from aurora.storage.bookings import BookingValidationError
         backend = self._backend()
         with self.assertRaises(BookingValidationError):
             backend.create_booking(**self._details(guests=6, room_type="standard"))
 
     def test_zero_guests_rejected(self):
-        from bookings import BookingValidationError
+        from aurora.storage.bookings import BookingValidationError
         backend = self._backend()
         with self.assertRaises(BookingValidationError):
             backend.create_booking(**self._details(guests=0))
@@ -927,11 +927,11 @@ class _BookingBackendContractTests:
 
 class SqliteBookingBackendTests(_BookingBackendContractTests, unittest.TestCase):
     def _backend(self):
-        from bookings import SqliteBookingBackend
+        from aurora.storage.bookings import SqliteBookingBackend
         return SqliteBookingBackend(":memory:")
 
     def test_confirmation_collision_retries_with_a_new_code(self):
-        from bookings import SqliteBookingBackend
+        from aurora.storage.bookings import SqliteBookingBackend
         codes = iter(["AH-AAAAAA", "AH-AAAAAA", "AH-BBBBBB"])
         backend = SqliteBookingBackend(":memory:", id_generator=lambda: next(codes))
         first = backend.create_booking(**self._details())
@@ -958,7 +958,7 @@ class PostgresBookingBackendTests(_BookingBackendContractTests, unittest.TestCas
     TABLE = "bookings_contract_test"
 
     def _backend(self, id_generator=None):
-        from bookings import PostgresBookingBackend
+        from aurora.storage.bookings import PostgresBookingBackend
         kwargs = dict(
             host=os.environ["POSTGRES_HOST"],
             port=int(os.getenv("POSTGRES_PORT", "5432")),
@@ -988,7 +988,7 @@ class PostgresBookingBackendTests(_BookingBackendContractTests, unittest.TestCas
     def setUp(self):
         # Start each test from a clean, empty table (mirrors SQLite's fresh
         # :memory: db per test) so e.g. "first confirmation is AH-4827" holds.
-        from bookings import PostgresBookingBackend
+        from aurora.storage.bookings import PostgresBookingBackend
         probe = PostgresBookingBackend(
             host=os.environ["POSTGRES_HOST"],
             port=int(os.getenv("POSTGRES_PORT", "5432")),
@@ -1052,15 +1052,15 @@ class LoadTestPercentileTests(unittest.TestCase):
     deployment — not exercised here — but its pure percentile math is."""
 
     def test_percentile_on_empty_list_is_zero(self):
-        from load_test import _percentile
+        from aurora.ops.load_test import _percentile
         self.assertEqual(_percentile([], 0.95), 0.0)
 
     def test_median_of_five_values(self):
-        from load_test import _percentile
+        from aurora.ops.load_test import _percentile
         self.assertEqual(_percentile([1, 2, 3, 4, 5], 0.5), 3)
 
     def test_p95_picks_a_high_but_not_the_max_value_for_a_large_sample(self):
-        from load_test import _percentile
+        from aurora.ops.load_test import _percentile
         values = list(range(1, 101))  # 1..100
         self.assertEqual(_percentile(values, 0.95), 95)
 

@@ -28,7 +28,16 @@ except ModuleNotFoundError:
     pass
 
 _PROMPT_NAME = os.getenv("OPIK_PROMPT_NAME", "aurora-system-prompt")
-_EVALS_DIR = Path(__file__).resolve().parent.parent / "evals"
+def _evals_dir() -> Path:
+    """Locate evals/ (goal.md ADR-020): cwd first (repo-root invocations),
+    then the repo root relative to this file (editable installs)."""
+    cwd_candidate = Path.cwd() / "evals"
+    if cwd_candidate.is_dir():
+        return cwd_candidate
+    return Path(__file__).resolve().parents[3] / "evals"
+
+
+_EVALS_DIR = _evals_dir()
 
 
 def run_eval_gate(version: str) -> bool:

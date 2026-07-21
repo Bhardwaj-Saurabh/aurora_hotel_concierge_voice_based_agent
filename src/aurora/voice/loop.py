@@ -20,15 +20,15 @@ import tempfile
 import threading
 import uuid
 
-from agent import (
+from aurora.core.agent import (
     Agent,
     FALLBACK_RETRY_MESSAGES,
     FALLBACK_TRANSFER_MESSAGES,
     FILLER_MESSAGES,
 )
-from providers import make_provider
-from spoken_text import normalize_spoken_text
-from telemetry import TurnTrace, format_trace, write_trace
+from aurora.core.providers import make_provider
+from aurora.core.spoken_text import normalize_spoken_text
+from aurora.telemetry.traces import TurnTrace, format_trace, write_trace
 
 try:
     from dotenv import load_dotenv
@@ -257,7 +257,7 @@ def main() -> None:
     parser.add_argument("--text", action="store_true",
                         help="type turns instead of speaking (no mic / no audio deps)")
     args = parser.parse_args()
-    from config_check import require_valid_config
+    from aurora.config.check import require_valid_config
     require_valid_config()  # fail fast, before the first turn (goal.md 2.3)
     run(text_mode=args.text)
 

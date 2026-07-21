@@ -13,8 +13,8 @@ import os
 os.environ["PROVIDER"] = "mock"          # offline backend
 os.environ.setdefault("TTS_BACKEND", "print")
 
-from agent import Agent                   # noqa: E402
-from providers import make_provider        # noqa: E402
+from aurora.core.agent import Agent                   # noqa: E402
+from aurora.core.providers import make_provider        # noqa: E402
 
 
 def main() -> None:

@@ -12,7 +12,7 @@ import os
 import unittest
 from unittest.mock import MagicMock, patch
 
-from prompt_registry import get_system_prompt
+from aurora.prompt_registry import get_system_prompt
 
 LOCAL_FALLBACK = "You are a friendly phone reservations agent."
 
@@ -20,7 +20,7 @@ LOCAL_FALLBACK = "You are a friendly phone reservations agent."
 class NoApiKeyTests(unittest.TestCase):
     def test_missing_api_key_returns_local_fallback_without_importing_opik(self):
         with patch.dict(os.environ, {"OPIK_API_KEY": ""}, clear=False):
-            with patch("prompt_registry._opik_client") as client_factory:
+            with patch("aurora.prompt_registry._opik_client") as client_factory:
                 text, version = get_system_prompt(LOCAL_FALLBACK)
         self.assertEqual(text, LOCAL_FALLBACK)
         self.assertEqual(version, "local")
@@ -38,7 +38,7 @@ class OpikConfiguredTests(unittest.TestCase):
         client = MagicMock()
         client.get_prompt.return_value = self._fake_prompt("Opik-managed prompt text", "v3")
         with patch.dict(os.environ, {"OPIK_API_KEY": "fake-key"}, clear=False):
-            with patch("prompt_registry._opik_client", return_value=client):
+            with patch("aurora.prompt_registry._opik_client", return_value=client):
                 text, version = get_system_prompt(LOCAL_FALLBACK)
         self.assertEqual(text, "Opik-managed prompt text")
         self.assertEqual(version, "opik:v3")
@@ -49,7 +49,7 @@ class OpikConfiguredTests(unittest.TestCase):
         client = MagicMock()
         client.get_prompt.side_effect = [None, self._fake_prompt("Latest untagged prompt", "v1")]
         with patch.dict(os.environ, {"OPIK_API_KEY": "fake-key"}, clear=False):
-            with patch("prompt_registry._opik_client", return_value=client):
+            with patch("aurora.prompt_registry._opik_client", return_value=client):
                 text, version = get_system_prompt(LOCAL_FALLBACK)
         self.assertEqual(text, "Latest untagged prompt")
         self.assertEqual(version, "opik:v1")
@@ -59,7 +59,7 @@ class OpikConfiguredTests(unittest.TestCase):
         client = MagicMock()
         client.get_prompt.return_value = None
         with patch.dict(os.environ, {"OPIK_API_KEY": "fake-key"}, clear=False):
-            with patch("prompt_registry._opik_client", return_value=client):
+            with patch("aurora.prompt_registry._opik_client", return_value=client):
                 text, version = get_system_prompt(LOCAL_FALLBACK)
         self.assertEqual(text, LOCAL_FALLBACK)
         self.assertEqual(version, "local-fallback")
@@ -68,14 +68,14 @@ class OpikConfiguredTests(unittest.TestCase):
         client = MagicMock()
         client.get_prompt.side_effect = RuntimeError("network is down")
         with patch.dict(os.environ, {"OPIK_API_KEY": "fake-key"}, clear=False):
-            with patch("prompt_registry._opik_client", return_value=client):
+            with patch("aurora.prompt_registry._opik_client", return_value=client):
                 text, version = get_system_prompt(LOCAL_FALLBACK)
         self.assertEqual(text, LOCAL_FALLBACK)
         self.assertEqual(version, "local-fallback")
 
     def test_client_construction_failure_falls_back_to_local(self):
         with patch.dict(os.environ, {"OPIK_API_KEY": "fake-key"}, clear=False):
-            with patch("prompt_registry._opik_client", side_effect=RuntimeError("bad config")):
+            with patch("aurora.prompt_registry._opik_client", side_effect=RuntimeError("bad config")):
                 text, version = get_system_prompt(LOCAL_FALLBACK)
         self.assertEqual(text, LOCAL_FALLBACK)
         self.assertEqual(version, "local-fallback")
@@ -94,7 +94,7 @@ class VersionOverrideTests(unittest.TestCase):
         client.get_prompt.return_value = prompt
         env = {"OPIK_API_KEY": "fake-key", "OPIK_PROMPT_VERSION_OVERRIDE": "v5"}
         with patch.dict(os.environ, env, clear=False):
-            with patch("prompt_registry._opik_client", return_value=client):
+            with patch("aurora.prompt_registry._opik_client", return_value=client):
                 text, version = get_system_prompt(LOCAL_FALLBACK)
         self.assertEqual(text, "Candidate v5 text")
         self.assertEqual(version, "opik:v5")
@@ -105,7 +105,7 @@ class VersionOverrideTests(unittest.TestCase):
         client.get_prompt.return_value = None
         env = {"OPIK_API_KEY": "fake-key", "OPIK_PROMPT_VERSION_OVERRIDE": "v999"}
         with patch.dict(os.environ, env, clear=False):
-            with patch("prompt_registry._opik_client", return_value=client):
+            with patch("aurora.prompt_registry._opik_client", return_value=client):
                 text, version = get_system_prompt(LOCAL_FALLBACK)
         self.assertEqual(text, LOCAL_FALLBACK)
         self.assertEqual(version, "local-fallback")

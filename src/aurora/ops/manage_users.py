@@ -19,7 +19,7 @@ try:
 except ModuleNotFoundError:
     pass
 
-from auth import get_auth_backend
+from aurora.storage.auth import get_auth_backend
 
 
 def _find_user_id(backend, email: str) -> int | None:

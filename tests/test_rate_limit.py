@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import unittest
 
-from rate_limit import SlidingWindowRateLimiter
+from aurora.rate_limit import SlidingWindowRateLimiter
 
 
 class FakeClock:
