@@ -3,10 +3,8 @@
 from __future__ import annotations
 
 import base64
-import http.client
 import json
 import os
-import threading
 import unittest
 from contextlib import contextmanager
 
@@ -105,10 +103,12 @@ class BrowserTtsPayloadTests(unittest.TestCase):
 
 
 class LiveServerAuthTests(unittest.TestCase):
-    """Integration tests for the auth HTTP layer (goal.md ADR-018), against a
-    real ThreadingHTTPServer on an ephemeral port with a real (in-memory,
+    """Integration tests for the auth HTTP layer (goal.md ADR-018), against
+    the real FastAPI app (in-process ASGI TestClient) with a real (in-memory,
     injected) auth backend — not mocked route-by-route, so this actually
-    proves the cookie/401/429 wiring end to end."""
+    proves the cookie/401/429 wiring end to end. Cookies are passed explicitly
+    per request (never a client-side jar), preserving the raw-HTTP semantics
+    these assertions were written against."""
 
     @classmethod
     def setUpClass(cls):
@@ -121,34 +121,25 @@ class LiveServerAuthTests(unittest.TestCase):
         auth.set_auth_backend_for_tests(auth.SqliteAuthBackend(":memory:"))
 
         talk_server._reset_rate_limiters_for_tests()
-        from http.server import ThreadingHTTPServer
-        cls.server = ThreadingHTTPServer(("127.0.0.1", 0), talk_server.Handler)
-        cls.port = cls.server.server_address[1]
-        cls.thread = threading.Thread(target=cls.server.serve_forever, daemon=True)
-        cls.thread.start()
+        cls.app = talk_server.create_app()
 
     @classmethod
     def tearDownClass(cls):
-        cls.server.shutdown()
-        cls.server.server_close()
         from aurora.storage import auth
         auth.reset_auth_backend()
 
     def _request(self, method, path, body=None, cookie=None):
-        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=5)
-        try:
-            headers = {"Content-Type": "application/json"}
-            if cookie:
-                headers["Cookie"] = cookie
-            data = json.dumps(body).encode("utf-8") if body is not None else None
-            conn.request(method, path, body=data, headers=headers)
-            response = conn.getresponse()
-            raw = response.read()
-            payload = json.loads(raw) if raw else {}
-            set_cookie = response.getheader("Set-Cookie")
-            return response.status, payload, set_cookie
-        finally:
-            conn.close()
+        from fastapi.testclient import TestClient
+
+        headers = {"Content-Type": "application/json"}
+        if cookie:
+            headers["Cookie"] = cookie
+        data = json.dumps(body).encode("utf-8") if body is not None else None
+        with TestClient(self.app) as client:  # fresh client: no cookie jar carry-over
+            response = client.request(method, path, content=data, headers=headers)
+        payload = json.loads(response.content) if response.content else {}
+        set_cookie = response.headers.get("set-cookie")
+        return response.status_code, payload, set_cookie
 
     def _register(self, email, password="correct horse battery"):
         status, payload, set_cookie = self._request(
