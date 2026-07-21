@@ -5,21 +5,15 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import sys
 from pathlib import Path
-
-ROOT = Path(__file__).resolve().parent.parent
-PIPELINE = ROOT / "pipeline"
-if str(PIPELINE) not in sys.path:
-    sys.path.insert(0, str(PIPELINE))
 
 os.environ["PROVIDER"] = "mock"
 os.environ.setdefault("TTS_BACKEND", "print")
 
-from agent import Agent  # noqa: E402
-from bookings import reset_booking_backend  # noqa: E402
-from providers import make_provider  # noqa: E402
-from telemetry import TurnTrace  # noqa: E402
+from aurora.core.agent import Agent  # noqa: E402
+from aurora.storage.bookings import reset_booking_backend  # noqa: E402
+from aurora.core.providers import make_provider  # noqa: E402
+from aurora.telemetry.traces import TurnTrace  # noqa: E402
 
 
 def _tool_names(trace: dict) -> list[str]:

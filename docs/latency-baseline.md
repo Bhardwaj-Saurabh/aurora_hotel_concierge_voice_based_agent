@@ -11,7 +11,7 @@ Status: **method ready — results pending a live run** (requires a provider key
 
 ### Preflight (once)
 
-`pipeline/.env` must have a live provider and telemetry enabled:
+`.env` must have a live provider and telemetry enabled:
 
 ```env
 PROVIDER=openai            # or groq
@@ -37,16 +37,16 @@ mid-sentence pause (turn 4 is the endpointing probe):
 ### Runs
 
 ```bash
-cd pipeline && source ../.venv/bin/activate
+source .venv/bin/activate
 
 # Run A — baseline
-ENDPOINT_SILENCE_MS=600 python voice_loop.py     # speak the 5 utterances, then Ctrl-C
+ENDPOINT_SILENCE_MS=600 python -m aurora.voice.loop     # speak the 5 utterances, then Ctrl-C
 
 # Run B — aggressive endpointing
-ENDPOINT_SILENCE_MS=350 python voice_loop.py     # same 5 utterances
+ENDPOINT_SILENCE_MS=350 python -m aurora.voice.loop     # same 5 utterances
 
 # Run C — patient endpointing
-ENDPOINT_SILENCE_MS=900 python voice_loop.py     # same 5 utterances
+ENDPOINT_SILENCE_MS=900 python -m aurora.voice.loop     # same 5 utterances
 ```
 
 Between runs, note qualitative events: was turn 4 **cut off** at the pause? How noticeable

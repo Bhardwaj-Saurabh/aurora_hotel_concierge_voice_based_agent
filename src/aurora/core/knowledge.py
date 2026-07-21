@@ -1,0 +1,206 @@
+"""Self-contained sparse retrieval for hotel policies and amenities.
+
+Knowledge ops (goal.md 2.6): the knowledge base is versioned as date-stamped
+snapshot folders (`knowledge/YYYY-MM-DD/`) each holding a `manifest.json` that
+lists the files belonging to that snapshot. The newest snapshot loads by
+default; setting KNOWLEDGE_SNAPSHOT in .env pins an older one — a one-line
+rollback. The manifest is authoritative: files not listed are not indexed.
+Loose *.md files in the root remain a fallback for unversioned layouts.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import re
+import sqlite3
+import unicodedata
+from pathlib import Path
+
+
+def _default_knowledge_root() -> Path:
+    """Locate the knowledge/ data directory (goal.md ADR-020). Order:
+    KNOWLEDGE_DIR env (containers set /app/knowledge), then the current
+    working directory (repo-root invocations), then the repo root relative
+    to this file (editable installs run from anywhere)."""
+    import os
+
+    override = os.getenv("KNOWLEDGE_DIR", "").strip()
+    if override:
+        return Path(override).expanduser()
+    cwd_candidate = Path.cwd() / "knowledge"
+    if cwd_candidate.is_dir():
+        return cwd_candidate
+    # src/aurora/core/knowledge.py -> parents[3] == assignment root
+    return Path(__file__).resolve().parents[3] / "knowledge"
+
+
+KNOWLEDGE_ROOT = _default_knowledge_root()
+
+_STOP_WORDS = {
+    "a", "about", "and", "are", "can", "do", "does", "for", "hotel", "i", "in",
+    "is", "me", "of", "policy", "tell", "the", "to", "what", "your",
+    "cual", "cuál", "de", "del", "el", "es", "la", "las", "los", "me", "politica",
+    "política", "que", "qué", "sobre", "una", "y",
+    "quelle", "quel", "est", "le", "les", "des", "du", "votre", "vos", "un",
+    "une", "politique", "d", "qu", "sont", "il", "y",
+}
+
+_QUERY_EXPANSIONS = {
+    "cancelacion": ["cancellation", "cancelled"],
+    "desayuno": ["breakfast"],
+    "estacionamiento": ["parking"],
+    "mascota": ["pets", "dogs"],
+    "mascotas": ["pets", "dogs"],
+    "perro": ["pets", "dogs"],
+    "perros": ["pets", "dogs"],
+    "accesibilidad": ["accessibility", "accessible"],
+    "annulation": ["cancellation", "cancelled"],
+    "animaux": ["pets", "dogs"],
+    "chien": ["pets", "dogs"],
+    "chiens": ["pets", "dogs"],
+    "stationnement": ["parking"],
+    "dejeuner": ["breakfast"],
+    "accessibilite": ["accessibility", "accessible"],
+}
+
+
+def _normalized(value: str) -> str:
+    decomposed = unicodedata.normalize("NFKD", value.lower())
+    return "".join(character for character in decomposed if not unicodedata.combining(character))
+
+
+def _chunks_from_markdown(path: Path) -> list[dict]:
+    chunks: list[dict] = []
+    title = path.stem.replace("_", " ").title()
+    heading = title
+    body: list[str] = []
+
+    def flush() -> None:
+        text = " ".join(line.strip() for line in body if line.strip()).strip()
+        if text:
+            chunks.append({
+                "source": path.name,
+                "section": heading,
+                "text": text,
+            })
+
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if line.startswith("## "):
+            flush()
+            body = []
+            heading = line[3:].strip()
+        elif not line.startswith("# "):
+            body.append(line)
+    flush()
+    return chunks
+
+
+def _snapshot_dirs(root: Path) -> list[Path]:
+    if not root.is_dir():
+        return []
+    return sorted(
+        entry for entry in root.iterdir()
+        if entry.is_dir() and (entry / "manifest.json").is_file()
+    )
+
+
+def _resolve_sources(root: Path, snapshot: str | None) -> tuple[str, list[Path]]:
+    """Return (snapshot_name, files_to_index) honoring an explicit pin."""
+    snapshots = _snapshot_dirs(root)
+    if snapshot:
+        pinned = root / snapshot
+        if pinned not in snapshots:
+            available = ", ".join(d.name for d in snapshots) or "none"
+            raise ValueError(
+                f"KNOWLEDGE_SNAPSHOT={snapshot!r} not found under {root} "
+                f"(available: {available})."
+            )
+        chosen = pinned
+    elif snapshots:
+        chosen = snapshots[-1]          # date-stamped names sort chronologically
+    else:
+        return "unversioned", sorted(root.glob("*.md"))
+    manifest = json.loads((chosen / "manifest.json").read_text(encoding="utf-8"))
+    files = [chosen / name for name in manifest.get("files", [])]
+    return chosen.name, [path for path in files if path.is_file()]
+
+
+class KnowledgeBase:
+    """Index Markdown chunks with SQLite FTS5 and a lexical fallback."""
+
+    def __init__(self, root: Path = KNOWLEDGE_ROOT, snapshot: str | None = None):
+        self.snapshot, sources = _resolve_sources(root, snapshot)
+        self.chunks: list[dict] = []
+        for path in sources:
+            self.chunks.extend(_chunks_from_markdown(path))
+        self.connection: sqlite3.Connection | None = None
+        try:
+            self.connection = sqlite3.connect(":memory:", check_same_thread=False)
+            self.connection.execute(
+                "CREATE VIRTUAL TABLE knowledge USING fts5(source, section, text)"
+            )
+            self.connection.executemany(
+                "INSERT INTO knowledge(source, section, text) VALUES (?, ?, ?)",
+                [(c["source"], c["section"], c["text"]) for c in self.chunks],
+            )
+        except sqlite3.OperationalError:
+            self.connection = None
+
+    def search(self, query: str, limit: int = 3) -> list[dict]:
+        original_tokens = re.findall(r"[a-zA-Z0-9áéíóúüñ]+", query.lower())
+        tokens = []
+        for token in original_tokens:
+            if token in _STOP_WORDS:
+                continue
+            normalized = _normalized(token)
+            tokens.append(normalized)
+            tokens.extend(_QUERY_EXPANSIONS.get(normalized, []))
+        tokens = list(dict.fromkeys(tokens))
+        if not tokens:
+            return []
+        if self.connection is not None:
+            fts_query = " OR ".join(f'"{token}"' for token in tokens)
+            try:
+                rows = self.connection.execute(
+                    "SELECT source, section, text, bm25(knowledge) AS score "
+                    "FROM knowledge WHERE knowledge MATCH ? ORDER BY score LIMIT ?",
+                    (fts_query, limit),
+                ).fetchall()
+                if rows:
+                    return [
+                        {"source": row[0], "section": row[1], "text": row[2], "score": row[3]}
+                        for row in rows
+                    ]
+            except sqlite3.OperationalError:
+                pass
+
+        scored = []
+        for chunk in self.chunks:
+            haystack = f"{chunk['section']} {chunk['text']}".lower()
+            score = sum(haystack.count(token) for token in tokens)
+            if score:
+                scored.append((score, chunk))
+        ranked = sorted(scored, key=lambda item: item[0], reverse=True)
+        return [dict(chunk, score=-score) for score, chunk in ranked[:limit]]
+
+
+KNOWLEDGE_BASE = KnowledgeBase(snapshot=os.getenv("KNOWLEDGE_SNAPSHOT", "").strip() or None)
+
+
+def search_hotel_knowledge(query: str, limit: int = 3) -> dict:
+    matches = KNOWLEDGE_BASE.search(query, limit=limit)
+    if not matches:
+        return {
+            "result": "No grounded hotel policy was found. Offer a transfer to the front desk.",
+            "sources": [],
+        }
+    passages = [
+        f"[{match['section']}] {match['text']}"
+        for match in matches
+    ]
+    sources = [f"{match['source']}#{match['section']}" for match in matches]
+    return {
+        "result": "Grounded hotel knowledge:\n" + "\n".join(passages),
+        "sources": sources,
+    }

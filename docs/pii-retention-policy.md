@@ -13,7 +13,7 @@
 
 | Data | Where | Sensitivity |
 |---|---|---|
-| Guest name, contact (phone/email) | Booking records (`pipeline/bookings.py`) | Direct PII |
+| Guest name, contact (phone/email) | Booking records (`aurora/storage/bookings.py`) | Direct PII |
 | Check-in/out dates, guest count, room type | Booking records | Low sensitivity alone; identifying combined with the above |
 | Caller transcript / agent reply text | `TurnTrace` events, **omitted by default** | Potentially sensitive (could contain anything a caller says) |
 | Session/turn/trace IDs | Every trace | Not PII themselves, but correlate turns to one call |
@@ -21,14 +21,14 @@
 
 ## 2. What's already technically enforced (in code today)
 
-- **Redaction by default** (`pipeline/telemetry.py`, `_SENSITIVE_KEYS`): `guest_name`, `contact`,
+- **Redaction by default** (`aurora/telemetry/traces.py`, `_SENSITIVE_KEYS`): `guest_name`, `contact`,
   `phone`, `phone_number`, `email` are replaced with `[REDACTED]` in every trace, unconditionally.
 - **Content omission by default** (`_CONTENT_KEYS`): `transcript`, `query`, `result`, `text`,
   `message` fields are replaced with `[OMITTED:<length>]` unless `TELEMETRY_INCLUDE_CONTENT=true`
   is explicitly set.
 - **Booking PII lives only in the booking store** (SQLite file or Postgres, per ADR-007/013),
   never in the JSONL/OTel telemetry stream — the two data stores are already separated by design.
-- **OTel export inherits redaction** (`pipeline/telemetry_otel.py`) — it maps an *already-redacted*
+- **OTel export inherits redaction** (`aurora/telemetry/otel.py`) — it maps an *already-redacted*
   trace payload to spans; there is no path for raw content to reach an export backend that
   wasn't already blocked at the source.
 

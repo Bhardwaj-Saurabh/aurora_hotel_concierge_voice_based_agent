@@ -37,20 +37,19 @@ Assignment_2_voice_agent/
 |   |-- core.json
 |   |-- red_team.json
 |   `-- run_evals.py
-|-- pipeline/
-|   |-- agent.py
-|   |-- knowledge.py
-|   |-- providers.py
-|   |-- router.py
-|   |-- scale_check.py
-|   |-- telemetry.py
-|   |-- test_features.py
-|   `-- voice_loop.py
-|-- livekit/
-|   |-- start_local_server.sh
-|   |-- create_room.py
-|   |-- talk_server.py
-|   `-- web/
+|-- pyproject.toml             # one installable package: pip install -e .
+|-- src/aurora/
+|   |-- core/                  # brain: agent, tools, prompts, providers, router, RAG
+|   |-- server/                # FastAPI talk server + packaged browser client (web/)
+|   |-- worker/                # room-native LiveKit agent worker
+|   |-- voice/                 # local mic/text turn loop
+|   |-- storage/               # bookings + user auth (SQLite/Postgres)
+|   |-- telemetry/             # JSONL traces + optional OTel export
+|   |-- config/                # .env loader + fail-fast config check
+|   `-- ops/                   # smoke, load_test, slo_report, scale_check, ...
+|-- tests/                     # all unit/integration tests (run from the root)
+|-- scripts/
+|   `-- start_local_livekit.sh
 `-- mocks/
     |-- demo_call.py
     |-- ivr_menu_mock.py
@@ -62,10 +61,12 @@ Assignment_2_voice_agent/
 The complete agent, tool, RAG, routing, evaluation, and scale paths run without network access or paid requests.
 
 ```bash
-cd FDE/Assignment_2_voice_agent/pipeline
-python3 smoke_test.py
-python3 -m unittest -v test_features.py
-PROVIDER=mock python3 voice_loop.py --text
+cd FDE/Assignment_2_voice_agent
+uv venv --python 3.12 && source .venv/bin/activate
+uv pip install -e ".[server,worker,dev]"
+python -m aurora.ops.smoke
+python -m unittest -v tests.test_features
+PROVIDER=mock python -m aurora.voice.loop --text
 ```
 
 Try these turns:
@@ -82,32 +83,32 @@ Connect me to the front desk.
 ## OpenAI Setup
 
 ```bash
-cd FDE/Assignment_2_voice_agent/pipeline
-python3 -m venv .venv
+cd FDE/Assignment_2_voice_agent
+uv venv --python 3.12
 source .venv/bin/activate
-pip install -r requirements.txt
-cp config.example.env .env
+uv pip install -e ".[server,worker,audio,dev]"
+cp config.example.env .env && chmod 600 .env
 ```
 
-Set the following values in `pipeline/.env`:
+Set the following values in `.env`:
 
 ```env
 PROVIDER=openai
 OPENAI_API_KEY=your_key_here
 TTS_BACKEND=system
-TELEMETRY_JSONL=../logs/voice-events.jsonl
+TELEMETRY_JSONL=logs/voice-events.jsonl
 ```
 
 Verify the live model before adding audio:
 
 ```bash
-python voice_loop.py --text
+python -m aurora.voice.loop --text
 ```
 
 Run the local microphone cascade:
 
 ```bash
-python voice_loop.py
+python -m aurora.voice.loop
 ```
 
 The terminal reports capture, STT, routing, retrieval, LLM, tool, TTS, and total turn timing. `TTS_BACKEND=system` uses the macOS voice and avoids cloud TTS cost during rehearsal.
@@ -128,37 +129,26 @@ The commands remain the same.
 
 ## Local LiveKit Demo
 
-Install the room demo once:
-
-```bash
-cd FDE/Assignment_2_voice_agent/livekit
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-npm install
-```
-
-Use three terminals.
+The room demo uses the same root install (the browser's LiveKit client library is vendored
+inside the package — no npm step). Use three terminals from the assignment root.
 
 Terminal 1 starts the self-contained LiveKit development server:
 
 ```bash
-cd FDE/Assignment_2_voice_agent/livekit
-./start_local_server.sh
+./scripts/start_local_livekit.sh
 ```
 
 Terminal 2 creates the room and starts the browser application:
 
 ```bash
-cd FDE/Assignment_2_voice_agent/livekit
 source .venv/bin/activate
-python create_room.py
-python talk_server.py
+python -m aurora.ops.create_room
+python -m aurora.server
 ```
 
 Open `http://localhost:5173`, click **Start call**, allow microphone access, and speak naturally. The browser automatically joins the caller and Aurora participants, detects caller turns, displays grounding sources, and shows stage telemetry.
 
-The LiveKit bridge honors `TTS_BACKEND` from `pipeline/.env`. With `provider`, the server synthesizes WAV audio using `TTS_MODEL` and `TTS_VOICE`, and the UI labels the response with the selected voice. With `system` or `mock`, the browser uses its installed speech voice.
+The LiveKit bridge honors `TTS_BACKEND` from `.env`. With `provider`, the server synthesizes WAV audio using `TTS_MODEL` and `TTS_VOICE`, and the UI labels the response with the selected voice. With `system` or `mock`, the browser uses its installed speech voice.
 
 The browser exposes two workshop controls:
 
@@ -171,20 +161,19 @@ Speak while Aurora is playing a response to demonstrate playback barge-in. The b
 
 Two agent transports exist:
 
-- **HTTP turn bridge** (`talk_server.py`, default demo path): the browser records a completed
+- **HTTP turn bridge** (`aurora.server`, the FastAPI talk server, default demo path): the browser records a completed
   turn and POSTs audio to `/voice-agent`; browser or provider TTS speaks the reply.
-- **Room-native agent worker** (`agent_worker.py`): the agent joins the room as a participant,
+- **Room-native agent worker** (`aurora.worker`): the agent joins the room as a participant,
   subscribes to the caller's audio track, runs Silero VAD/turn detection server-side, and
-  publishes Aurora's replies as a TTS audio track. The same pipeline `Agent` powers both — the
+  publishes Aurora's replies as a TTS audio track. The same `Agent` powers both — the
   worker only replaces the transport.
 
 Run the worker against the local server (requires a live provider; the mock cannot hear or speak):
 
 ```bash
-cd FDE/Assignment_2_voice_agent/livekit
-source ../.venv/bin/activate
+source .venv/bin/activate
 LIVEKIT_URL=ws://localhost:7880 LIVEKIT_API_KEY=devkey LIVEKIT_API_SECRET=secret \
-python agent_worker.py dev
+python -m aurora.worker dev
 ```
 
 Then join the room from the browser app; the worker is dispatched automatically.
@@ -229,15 +218,14 @@ Important production measures include endpoint delay, STT latency, LLM time to f
 Run all deterministic scenarios:
 
 ```bash
-cd FDE/Assignment_2_voice_agent/evals
-python3 run_evals.py --suite all
+python evals/run_evals.py --suite all
 ```
 
 Run one suite with conversation details:
 
 ```bash
-python3 run_evals.py --suite core --verbose
-python3 run_evals.py --suite red-team --verbose
+python evals/run_evals.py --suite core --verbose
+python evals/run_evals.py --suite red-team --verbose
 ```
 
 The suites verify expected tools, actions, languages, sources, allowed text, and forbidden text. The red-team set covers prompt injection, policy fabrication, privacy, structured tool input, and guardrails after a language switch.
@@ -247,8 +235,7 @@ The suites verify expected tools, actions, languages, sources, allowed text, and
 The calculator converts product assumptions into peak concurrency and service demand without calling a provider:
 
 ```bash
-cd FDE/Assignment_2_voice_agent/pipeline
-python3 scale_check.py --dau 1000000
+python -m aurora.ops.scale_check --dau 1000000
 ```
 
 Default assumptions are 0.25 calls per DAU, four minutes per call, three turns per minute, an 8x peak factor, 40 sessions per worker, and 30 percent headroom. Change every assumption before using the result as a capacity plan.
@@ -256,7 +243,7 @@ Default assumptions are 0.25 calls per DAU, four minutes per call, three turns p
 Example with a blended variable cost:
 
 ```bash
-python3 scale_check.py --dau 1000000 --cost-per-minute 0.035
+python -m aurora.ops.scale_check --dau 1000000 --cost-per-minute 0.035
 ```
 
 ## Telephony Mapping
