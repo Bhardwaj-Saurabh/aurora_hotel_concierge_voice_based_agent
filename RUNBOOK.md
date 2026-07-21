@@ -255,9 +255,13 @@ happens before export. `config_check.py` flags a configured endpoint with a miss
 `Key1=Value1,Key2=Value2` env var (this module stays vendor-neutral) — Opik needs three:
 
 ```bash
-TELEMETRY_OTLP_ENDPOINT=https://www.comet.com/opik/api/v1/private/otel
-TELEMETRY_OTLP_HEADERS=Authorization=<OPIK_API_KEY>,projectName=<project>,Comet-Workspace=<workspace>
+TELEMETRY_OTLP_ENDPOINT=https://www.comet.com/opik/api/v1/private/otel/v1/traces
+TELEMETRY_OTLP_HEADERS=Authorization=<OPIK_API_KEY>,projectName=<project>,Comet-Workspace=<your-real-workspace-slug>
 ```
+
+Verified live, not assumed from docs: the endpoint without the `/v1/traces` suffix 404s, and
+`Comet-Workspace` must be your actual workspace slug (visible in the Opik dashboard URL) —
+`"default"` authenticates fine for the Prompt Library API but silently 500s on trace ingestion.
 
 ### 7.2.1 Prompt registry — Opik Cloud
 
