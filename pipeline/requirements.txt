@@ -15,6 +15,10 @@ numpy              # audio buffers
 
 # TTS/STT playback + capture use local system commands  -  no extra deps.
 
+# Optional durable booking backend (goal.md ADR-007/ADR-013). Only used when
+# POSTGRES_HOST is set in .env; SQLite/in-memory remains the default.
+psycopg[binary]>=3.1
+
 # Telemetry mapping to OpenTelemetry spans (goal.md 4.2). The OTLP wire
 # exporter is optional; install it only when exporting to a collector:
 #   pip install opentelemetry-exporter-otlp-proto-http

@@ -109,6 +109,27 @@ def validate_config(env: Mapping[str, str] | None = None) -> list[str]:
         except (OSError, sqlite3.OperationalError) as exc:
             problems.append(f"BOOKINGS_DB={bookings!r} cannot be opened: {exc}")
 
+    postgres_host = _value(env, "POSTGRES_HOST")
+    if postgres_host:
+        for required in ("POSTGRES_USER", "POSTGRES_PASSWORD", "POSTGRES_DB"):
+            if not _value(env, required):
+                problems.append(
+                    f"POSTGRES_HOST is set but {required} is missing (goal.md ADR-013)."
+                )
+        port = _value(env, "POSTGRES_PORT")
+        if port:
+            try:
+                int(port)
+            except ValueError:
+                problems.append(f"POSTGRES_PORT={port!r} is not a valid number.")
+        try:
+            import psycopg  # noqa: F401
+        except ImportError:
+            problems.append(
+                "POSTGRES_HOST is set but psycopg is missing: "
+                "pip install \"psycopg[binary]>=3.1\""
+            )
+
     return problems
 
 

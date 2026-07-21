@@ -6,6 +6,14 @@ import os
 import unittest
 from unittest.mock import patch
 
+try:
+    # Picks up POSTGRES_* for the live-backend contract tests below; existing
+    # env vars (set explicitly on the next two lines) always win over .env.
+    from dotenv import load_dotenv
+    load_dotenv()
+except ModuleNotFoundError:
+    pass
+
 os.environ["PROVIDER"] = "mock"
 os.environ.setdefault("TTS_BACKEND", "print")
 
@@ -587,6 +595,40 @@ class SpokenTextTests(unittest.TestCase):
         self.assertEqual(provider.spoken, ["Booking confirmed, code AH-4827"])
 
 
+class PostgresConfigCheckTests(unittest.TestCase):
+    def test_no_postgres_host_is_fine(self):
+        from config_check import validate_config
+        self.assertEqual(validate_config({"PROVIDER": "mock"}), [])
+
+    def test_postgres_host_requires_user_password_db(self):
+        from config_check import validate_config
+        problems = validate_config({"PROVIDER": "mock", "POSTGRES_HOST": "db.example.com"})
+        self.assertTrue(any("POSTGRES_USER" in p for p in problems))
+        self.assertTrue(any("POSTGRES_PASSWORD" in p for p in problems))
+        self.assertTrue(any("POSTGRES_DB" in p for p in problems))
+
+    def test_fully_configured_postgres_passes(self):
+        from config_check import validate_config
+        problems = validate_config({
+            "PROVIDER": "mock",
+            "POSTGRES_HOST": "db.example.com",
+            "POSTGRES_USER": "u",
+            "POSTGRES_PASSWORD": "p",
+            "POSTGRES_DB": "d",
+        })
+        self.assertEqual(problems, [])
+
+    def test_bad_postgres_port_flagged(self):
+        from config_check import validate_config
+        problems = validate_config({
+            "PROVIDER": "mock",
+            "POSTGRES_HOST": "db.example.com",
+            "POSTGRES_USER": "u", "POSTGRES_PASSWORD": "p", "POSTGRES_DB": "d",
+            "POSTGRES_PORT": "not-a-port",
+        })
+        self.assertTrue(any("POSTGRES_PORT" in p for p in problems))
+
+
 class ConfigCheckTests(unittest.TestCase):
     def test_mock_provider_needs_no_keys(self):
         from config_check import validate_config
@@ -688,10 +730,13 @@ class FailureFallbackTests(unittest.TestCase):
         self.assertTrue(transfer)
 
 
-class BookingBackendTests(unittest.TestCase):
+class _BookingBackendContractTests:
+    """Behavioral contract every BookingBackend must satisfy. Not a TestCase
+    itself (no test runner discovery) — mixed into one concrete class per
+    backend so both implementations are proven identical (goal.md ADR-013)."""
+
     def _backend(self):
-        from bookings import SqliteBookingBackend
-        return SqliteBookingBackend(":memory:")
+        raise NotImplementedError
 
     def _details(self, **overrides):
         details = {
@@ -751,6 +796,56 @@ class BookingBackendTests(unittest.TestCase):
         record = backend.create_booking(**self._details(check_in="next Tuesday",
                                                         check_out="the Thursday after"))
         self.assertTrue(record.created)
+
+
+class SqliteBookingBackendTests(_BookingBackendContractTests, unittest.TestCase):
+    def _backend(self):
+        from bookings import SqliteBookingBackend
+        return SqliteBookingBackend(":memory:")
+
+
+def _postgres_env_configured() -> bool:
+    return bool(os.getenv("POSTGRES_HOST", "").strip())
+
+
+@unittest.skipUnless(_postgres_env_configured(), "POSTGRES_HOST not configured; skipping live Postgres tests")
+class PostgresBookingBackendTests(_BookingBackendContractTests, unittest.TestCase):
+    """Runs for real against the configured Postgres instance (goal.md ADR-013).
+
+    Uses a disposable, uniquely-named table — never the production `bookings`
+    table — dropped and recreated per test for the same isolation SQLite's
+    `:memory:` gives for free.
+    """
+
+    TABLE = "bookings_contract_test"
+
+    def _backend(self):
+        from bookings import PostgresBookingBackend
+        backend = PostgresBookingBackend(
+            host=os.environ["POSTGRES_HOST"],
+            port=int(os.getenv("POSTGRES_PORT", "5432")),
+            user=os.environ["POSTGRES_USER"],
+            password=os.environ["POSTGRES_PASSWORD"],
+            dbname=os.environ["POSTGRES_DB"],
+            table_name=self.TABLE,
+        )
+        self.addCleanup(backend.close)
+        return backend
+
+    def setUp(self):
+        # Start each test from a clean, empty table (mirrors SQLite's fresh
+        # :memory: db per test) so e.g. "first confirmation is AH-4827" holds.
+        from bookings import PostgresBookingBackend
+        probe = PostgresBookingBackend(
+            host=os.environ["POSTGRES_HOST"],
+            port=int(os.getenv("POSTGRES_PORT", "5432")),
+            user=os.environ["POSTGRES_USER"],
+            password=os.environ["POSTGRES_PASSWORD"],
+            dbname=os.environ["POSTGRES_DB"],
+            table_name=self.TABLE,
+        )
+        probe.reset_for_tests()
+        probe.close()
 
 
 class TelemetryTests(unittest.TestCase):

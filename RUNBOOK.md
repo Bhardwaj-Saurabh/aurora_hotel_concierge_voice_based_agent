@@ -266,11 +266,26 @@ filler / fallback rates. Any `--max-*` breach exits non-zero — run it in CI or
 
 ### 7.4 Bookings
 
-`BOOKINGS_DB` set → durable SQLite with unique confirmation IDs and idempotency keys
-(session + normalized details). Inspect:
+Two backends, same interface (`get_booking_backend()` in `pipeline/bookings.py`), both idempotent
+via session + normalized-details keys:
+
+**SQLite** (default) — `BOOKINGS_DB` set → a durable file; blank → in-memory. Single instance only:
 
 ```bash
 sqlite3 logs/bookings.db 'SELECT confirmation_id, guest_name, check_in, check_out FROM bookings;'
+```
+
+**Postgres** (goal.md ADR-013) — set `POSTGRES_HOST`/`PORT`/`USER`/`PASSWORD`/`DB` to make this
+the active backend instead; needed the moment more than one process writes bookings (a worker
+pool, ADR-012), since idempotency across separate SQLite files can't be guaranteed. Atomicity
+comes from `INSERT ... ON CONFLICT (idempotency_key) DO NOTHING` at the database level, not an
+application lock. `POSTGRES_SSLMODE` defaults to `prefer` — hosted free-tier providers often
+don't actually support `require` despite what their docs claim; trust the live connection error
+over the marketing page. Inspect:
+
+```bash
+psql "postgresql://$POSTGRES_USER:$POSTGRES_PASSWORD@$POSTGRES_HOST:$POSTGRES_PORT/$POSTGRES_DB?sslmode=prefer" \
+  -c "SET search_path TO \"$POSTGRES_USER\", public; SELECT id, guest_name, check_in, check_out FROM bookings;"
 ```
 
 Confirmation IDs are currently a deterministic sequence (`AH-4827`, …) for eval stability —
