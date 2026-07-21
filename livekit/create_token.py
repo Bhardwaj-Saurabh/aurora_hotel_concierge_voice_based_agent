@@ -18,9 +18,9 @@ import warnings
 from pathlib import Path
 
 import jwt
-from livekit import api
 
 from env_loader import load_env_files
+from token_utils import mint_token
 
 LOCAL_DEFAULTS = {
     "LIVEKIT_API_KEY": "devkey",
@@ -49,19 +49,9 @@ def main() -> None:
     if _setting("LIVEKIT_API_SECRET") == LOCAL_DEFAULTS["LIVEKIT_API_SECRET"]:
         warnings.filterwarnings("ignore", category=jwt.InsecureKeyLengthWarning)
 
-    token = (
-        api.AccessToken(_setting("LIVEKIT_API_KEY"), _setting("LIVEKIT_API_SECRET"))
-        .with_identity(args.identity)
-        .with_name(args.name or args.identity)
-        .with_grants(
-            api.VideoGrants(
-                room_join=True,
-                room=args.room,
-                can_publish=True,
-                can_subscribe=True,
-            )
-        )
-        .to_jwt()
+    token = mint_token(
+        api_key=_setting("LIVEKIT_API_KEY"), api_secret=_setting("LIVEKIT_API_SECRET"),
+        identity=args.identity, name=args.name or args.identity, room=args.room,
     )
 
     print(token)

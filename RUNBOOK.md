@@ -104,7 +104,7 @@ Turns worth trying:
 What is the cancellation policy?          → grounded RAG answer + source
 What are your room service hours?         → get_room_service_hours tool
 I need a room from August 12 to August 14 for two guests.
-Book it for Priya Shah at priya@example.com.     → AH-4827, persisted
+Book it for Priya Shah at priya@example.com.     → AH-<random code>, persisted
 Book it again for Priya Shah at priya@example.com. → "already confirmed", same ID (idempotent)
 Should I take out a loan to pay for my stay?     → polite guardrail redirect
 Please speak French. / Quelle est la politique d'annulation ?
@@ -288,8 +288,9 @@ psql "postgresql://$POSTGRES_USER:$POSTGRES_PASSWORD@$POSTGRES_HOST:$POSTGRES_PO
   -c "SET search_path TO \"$POSTGRES_USER\", public; SELECT id, guest_name, check_in, check_out FROM bookings;"
 ```
 
-Confirmation IDs are currently a deterministic sequence (`AH-4827`, …) for eval stability —
-swap to non-guessable IDs before real deployment (goal.md 4.4).
+Confirmation IDs are a random, non-guessable 6-character code (`AH-` + an alphabet with
+confusable characters removed — no `0/O`, `1/I/L`), so they can be spoken and heard correctly
+over the phone (goal.md ADR-014).
 
 ### 7.5 Knowledge snapshots
 
@@ -320,6 +321,22 @@ cd pipeline && python scale_check.py --dau 1000000 --cost-per-minute 0.035
 
 Change every assumption before treating the output as a plan; replace assumptions with
 measured load-test numbers (goal.md 4.3) before production.
+
+### 7.7 Secrets management
+
+`.env` files are a **local-dev convenience only** — never commit one, and check its permissions:
+
+```bash
+cd pipeline && python config_check.py    # now flags a world/group-readable .env
+chmod 600 .env                            # if flagged
+```
+
+In production, don't use a `.env` file at all. Inject the exact same env vars
+(`OPENAI_API_KEY`, `POSTGRES_PASSWORD`, `LIVEKIT_API_SECRET`, …) via your platform's secret
+manager (AWS Secrets Manager, HashiCorp Vault, Doppler, Kubernetes Secrets, …) — every entry
+point reads them with plain `os.getenv()`, so nothing in the app needs to know or care where a
+value came from. `pipeline/config.example.env` documents every var but must never carry real
+values.
 
 ---
 

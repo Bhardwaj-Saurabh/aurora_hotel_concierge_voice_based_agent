@@ -26,6 +26,7 @@ _NUMERIC_VARS = (
     ("PROVIDER_TIMEOUT_S", float),
     ("PROVIDER_MAX_RETRIES", int),
     ("LATENCY_FILLER_MS", int),
+    ("LIVEKIT_TOKEN_TTL_MINUTES", int),
 )
 
 
@@ -133,9 +134,25 @@ def validate_config(env: Mapping[str, str] | None = None) -> list[str]:
     return problems
 
 
+def check_env_file_permissions(path: Path) -> list[str]:
+    """Flag a .env file readable/writable by anyone but its owner (goal.md
+    ADR-016). A real secret manager injects env vars directly and never
+    touches this check; this only protects the local-dev/.env file path."""
+    if not path.exists():
+        return []
+    mode = path.stat().st_mode & 0o777
+    if mode & 0o077:
+        return [
+            f"{path} is readable by group/others (mode {oct(mode)[2:]}); "
+            f"it holds real secrets. Run: chmod 600 {path}"
+        ]
+    return []
+
+
 def require_valid_config(env: Mapping[str, str] | None = None) -> None:
     """Print problems and exit non-zero; call before serving the first turn."""
     problems = validate_config(env)
+    problems += check_env_file_permissions(Path(__file__).resolve().parent / ".env")
     if not problems:
         return
     print("Configuration problems (fix pipeline/.env):")
@@ -150,12 +167,7 @@ def main() -> None:
         load_dotenv()
     except ModuleNotFoundError:
         pass
-    problems = validate_config()
-    if problems:
-        print("Configuration problems (fix pipeline/.env):")
-        for problem in problems:
-            print(f"  - {problem}")
-        raise SystemExit(2)
+    require_valid_config()  # includes the .env file-permission check
     print("Configuration OK.")
 
 

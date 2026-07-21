@@ -17,7 +17,6 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 import jwt
-from livekit import api
 
 from env_loader import load_env_files
 
@@ -257,19 +256,10 @@ def _is_probable_playback_echo(transcript: str) -> bool:
 def _token(identity: str, name: str, room: str) -> str:
     if _livekit_api_secret() == "secret":
         warnings.filterwarnings("ignore", category=jwt.InsecureKeyLengthWarning)
-    return (
-        api.AccessToken(_livekit_api_key(), _livekit_api_secret())
-        .with_identity(identity)
-        .with_name(name)
-        .with_grants(
-            api.VideoGrants(
-                room_join=True,
-                room=room,
-                can_publish=True,
-                can_subscribe=True,
-            )
-        )
-        .to_jwt()
+    from token_utils import mint_token
+    return mint_token(
+        api_key=_livekit_api_key(), api_secret=_livekit_api_secret(),
+        identity=identity, name=name, room=room,
     )
 
 

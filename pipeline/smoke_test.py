@@ -42,10 +42,10 @@ def main() -> None:
         "I need a room from August 12 to August 14 for two guests.",
         expect_in="Standard Queen",
     )
-    # Booking path -> confirmation
+    # Booking path -> confirmation (random non-guessable code, goal.md ADR-014)
     turn(
         "Yes, book it for Priya Shah at priya@example.com.",
-        expect_in="AH-4827",
+        expect_in="AH-",
     )
     # Transfer path -> SIP REFER
     turn("Actually, connect me to a person", expect_action="transfer")

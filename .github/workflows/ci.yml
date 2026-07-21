@@ -40,7 +40,7 @@ jobs:
 
       - name: "Gate 4: livekit unit tests"
         working-directory: livekit
-        run: python -m unittest -v test_talk_server.py test_env_loader.py test_agent_worker.py
+        run: python -m unittest -v test_talk_server.py test_env_loader.py test_agent_worker.py test_token_utils.py
 
   # Two images, two jobs (ADR-012): the talk-server (web-facing, scales with
   # HTTP traffic) and the room-native worker (job worker, scales with

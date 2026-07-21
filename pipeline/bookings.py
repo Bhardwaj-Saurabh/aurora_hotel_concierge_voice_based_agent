@@ -1,14 +1,16 @@
 """
-bookings.py  -  durable, idempotent booking storage (goal.md ADR-007/ADR-013).
+bookings.py  -  durable, idempotent booking storage (goal.md ADR-007/013/014).
 
 BookingBackend semantics (both implementations below satisfy the same
 contract, proven by the shared test mixin in test_features.py):
     - A retried create_booking with identical details returns the SAME confirmation
       (created=False) instead of double-booking. Idempotency key = sha256 of the
       session plus normalized booking details.
-    - Confirmation IDs are a deterministic sequence (AH-4827, AH-4828, ...) so the
-      offline evals, smoke test, and workshop story stay stable. Production must
-      switch to non-guessable IDs before real deployment (goal.md Phase 4.4).
+    - Confirmation IDs are a random, non-guessable code (ADR-014) — never a
+      sequential counter. A sequential ID lets anyone enumerate every other
+      guest's booking and leaks business volume to a single glance at one
+      receipt. The alphabet excludes confusable characters (0/O, 1/I/L) since
+      these get read aloud and typed back over the phone.
     - Validation errors raise BookingValidationError with a caller-friendly,
       speakable message.
 
@@ -27,6 +29,7 @@ from __future__ import annotations
 import hashlib
 import os
 import re
+import secrets
 import sqlite3
 import threading
 from dataclasses import dataclass
@@ -41,7 +44,11 @@ ROOMS = {
     "accessible": {"name": "Accessible Queen", "rate": "$199/night", "capacity": 2},
 }
 
-_FIRST_CONFIRMATION_NUMBER = 4827
+# No 0/O, 1/I/L: characters a caller or STT could confuse when a confirmation
+# code is read aloud and typed back (goal.md ADR-014).
+_CONFIRMATION_ALPHABET = "23456789ABCDEFGHJKMNPQRSTUVWXYZ"
+_CONFIRMATION_CODE_LENGTH = 6
+_MAX_CONFIRMATION_RETRIES = 5  # collision odds are ~1 in 900M; a safety net, not an expectation
 
 _DATE_FORMATS = (
     "%B %d %Y", "%B %d", "%d %B %Y", "%d %B", "%Y-%m-%d", "%m/%d/%Y", "%m/%d",
@@ -134,6 +141,13 @@ def _validate_and_normalize(
     return room_key, details
 
 
+def _generate_confirmation_id() -> str:
+    code = "".join(
+        secrets.choice(_CONFIRMATION_ALPHABET) for _ in range(_CONFIRMATION_CODE_LENGTH)
+    )
+    return f"AH-{code}"
+
+
 def _idempotency_key(
     session_id: str,
     check_in: str,
@@ -159,8 +173,9 @@ class SqliteBookingBackend:
     """SQLite implementation of the booking store. Single-instance only — see
     PostgresBookingBackend for a pool of processes/replicas (ADR-013)."""
 
-    def __init__(self, path: str = ":memory:"):
+    def __init__(self, path: str = ":memory:", id_generator=_generate_confirmation_id):
         self._lock = threading.Lock()
+        self._id_generator = id_generator
         self._conn = sqlite3.connect(path, check_same_thread=False)
         self._conn.execute(
             "CREATE TABLE IF NOT EXISTS bookings ("
@@ -205,21 +220,28 @@ class SqliteBookingBackend:
             ).fetchone()
             if row:
                 return BookingRecord(confirmation_id=row[0], created=False, **details)
-            next_id = self._conn.execute(
-                "SELECT COALESCE(MAX(id), 0) + 1 FROM bookings"
-            ).fetchone()[0]
-            confirmation = f"AH-{_FIRST_CONFIRMATION_NUMBER - 1 + next_id}"
-            self._conn.execute(
-                "INSERT INTO bookings (confirmation_id, idempotency_key, session_id,"
-                " check_in, check_out, guests, room_type, guest_name, contact)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (
-                    confirmation, key, session_id,
-                    details["check_in"], details["check_out"], details["guests"],
-                    details["room_type"], details["guest_name"], details["contact"],
-                ),
-            )
-            self._conn.commit()
+            for _ in range(_MAX_CONFIRMATION_RETRIES):
+                confirmation = self._id_generator()
+                try:
+                    self._conn.execute(
+                        "INSERT INTO bookings (confirmation_id, idempotency_key,"
+                        " session_id, check_in, check_out, guests, room_type,"
+                        " guest_name, contact) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                        (
+                            confirmation, key, session_id,
+                            details["check_in"], details["check_out"], details["guests"],
+                            details["room_type"], details["guest_name"], details["contact"],
+                        ),
+                    )
+                    self._conn.commit()
+                    break
+                except sqlite3.IntegrityError:
+                    continue  # confirmation_id collision (idempotency_key already checked above)
+            else:
+                raise RuntimeError(
+                    "Could not generate a unique confirmation ID after "
+                    f"{_MAX_CONFIRMATION_RETRIES} attempts."
+                )
         return BookingRecord(confirmation_id=confirmation, created=True, **details)
 
     def close(self) -> None:
@@ -243,10 +265,12 @@ class PostgresBookingBackend:
         dbname: str,
         table_name: str = "bookings",
         sslmode: str = "prefer",
+        id_generator=_generate_confirmation_id,
     ):
         import psycopg  # imported lazily: offline paths never need this dependency
         self._psycopg = psycopg
         self._table = table_name
+        self._id_generator = id_generator
         self._lock = threading.Lock()
         self._conn = psycopg.connect(
             host=host, port=port, user=user, password=password, dbname=dbname,
@@ -275,6 +299,7 @@ class PostgresBookingBackend:
             self._conn.execute(sql.SQL(
                 "CREATE TABLE IF NOT EXISTS {table} ("
                 "  id BIGSERIAL PRIMARY KEY,"
+                "  confirmation_id TEXT UNIQUE NOT NULL,"
                 "  idempotency_key TEXT UNIQUE NOT NULL,"
                 "  session_id TEXT NOT NULL,"
                 "  check_in TEXT NOT NULL,"
@@ -308,30 +333,46 @@ class PostgresBookingBackend:
             session_id, check_in, check_out, details["guests"], room_key,
             guest_name, contact,
         )
+        insert_sql = sql.SQL(
+            "INSERT INTO {table} (confirmation_id, idempotency_key, session_id,"
+            " check_in, check_out, guests, room_type, guest_name, contact)"
+            " VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)"
+            " ON CONFLICT (idempotency_key) DO NOTHING"
+            " RETURNING confirmation_id"
+        ).format(table=sql.Identifier(self._table))
         with self._lock:
-            row = self._conn.execute(
-                sql.SQL(
-                    "INSERT INTO {table} (idempotency_key, session_id, check_in,"
-                    " check_out, guests, room_type, guest_name, contact)"
-                    " VALUES (%s, %s, %s, %s, %s, %s, %s, %s)"
-                    " ON CONFLICT (idempotency_key) DO NOTHING"
-                    " RETURNING id"
-                ).format(table=sql.Identifier(self._table)),
-                (
-                    key, session_id, details["check_in"], details["check_out"],
-                    details["guests"], details["room_type"], details["guest_name"],
-                    details["contact"],
-                ),
-            ).fetchone()
-            created = row is not None
-            if row is None:
-                # Conflict: another process already won this idempotency key.
-                row = self._conn.execute(
-                    sql.SQL("SELECT id FROM {table} WHERE idempotency_key = %s")
-                    .format(table=sql.Identifier(self._table)),
-                    (key,),
-                ).fetchone()
-        confirmation = f"AH-{_FIRST_CONFIRMATION_NUMBER - 1 + row[0]}"
+            confirmation = None
+            for _ in range(_MAX_CONFIRMATION_RETRIES):
+                candidate = self._id_generator()
+                try:
+                    row = self._conn.execute(
+                        insert_sql,
+                        (
+                            candidate, key, session_id, details["check_in"],
+                            details["check_out"], details["guests"],
+                            details["room_type"], details["guest_name"],
+                            details["contact"],
+                        ),
+                    ).fetchone()
+                except self._psycopg.errors.UniqueViolation:
+                    continue  # confirmation_id collision; idempotency_key already checked
+                created = row is not None
+                if row is not None:
+                    confirmation = row[0]
+                else:
+                    # Conflict on idempotency_key: another process already won it.
+                    existing = self._conn.execute(
+                        sql.SQL("SELECT confirmation_id FROM {table} WHERE idempotency_key = %s")
+                        .format(table=sql.Identifier(self._table)),
+                        (key,),
+                    ).fetchone()
+                    confirmation = existing[0]
+                break
+            else:
+                raise RuntimeError(
+                    "Could not generate a unique confirmation ID after "
+                    f"{_MAX_CONFIRMATION_RETRIES} attempts."
+                )
         return BookingRecord(confirmation_id=confirmation, created=created, **details)
 
     def reset_for_tests(self) -> None:

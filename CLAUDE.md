@@ -103,8 +103,9 @@ search. Phrase lists and fuzzy-match terms live at the top of the file.
 - Language → `set_language` control tool (validated session state)
 - Transfer/hangup → control `action` returned to the loop (→ SIP REFER/BYE)
 
-The mock tools in `run_tool()` return hardcoded rooms and a fixed confirmation ID (`AH-4827`) —
-swap for real backends in production.
+Room availability/rates in `run_tool()` are a static mock catalog. Bookings themselves are real:
+`pipeline/bookings.py` persists them (SQLite or Postgres, ADR-007/013) with a random,
+non-guessable confirmation ID (ADR-014) — never a sequential counter.
 
 **Language routing** ([pipeline/router.py](pipeline/router.py) + `set_language` handling in
 `agent.py`): `AgentRouter` holds validated `en`/`es` session state. The LLM proposes a switch,

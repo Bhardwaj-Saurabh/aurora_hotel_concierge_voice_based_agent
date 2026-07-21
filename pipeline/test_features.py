@@ -629,10 +629,52 @@ class PostgresConfigCheckTests(unittest.TestCase):
         self.assertTrue(any("POSTGRES_PORT" in p for p in problems))
 
 
+class EnvFilePermissionsTests(unittest.TestCase):
+    def test_world_readable_env_file_flagged(self):
+        import tempfile
+        from pathlib import Path
+        from config_check import check_env_file_permissions
+
+        with tempfile.NamedTemporaryFile(suffix=".env", delete=False) as f:
+            path = Path(f.name)
+        try:
+            path.chmod(0o644)
+            problems = check_env_file_permissions(path)
+            self.assertTrue(any("readable" in p.lower() or "permissions" in p.lower()
+                               for p in problems))
+        finally:
+            path.unlink()
+
+    def test_owner_only_env_file_passes(self):
+        import tempfile
+        from pathlib import Path
+        from config_check import check_env_file_permissions
+
+        with tempfile.NamedTemporaryFile(suffix=".env", delete=False) as f:
+            path = Path(f.name)
+        try:
+            path.chmod(0o600)
+            self.assertEqual(check_env_file_permissions(path), [])
+        finally:
+            path.unlink()
+
+    def test_missing_env_file_is_not_a_problem(self):
+        from pathlib import Path
+        from config_check import check_env_file_permissions
+        self.assertEqual(check_env_file_permissions(Path("/nonexistent/.env")), [])
+
+
 class ConfigCheckTests(unittest.TestCase):
     def test_mock_provider_needs_no_keys(self):
         from config_check import validate_config
         self.assertEqual(validate_config({"PROVIDER": "mock"}), [])
+
+    def test_bad_livekit_token_ttl_flagged(self):
+        from config_check import validate_config
+        problems = validate_config({
+            "PROVIDER": "mock", "LIVEKIT_TOKEN_TTL_MINUTES": "not-a-number",
+        })
+        self.assertTrue(any("LIVEKIT_TOKEN_TTL_MINUTES" in p for p in problems))
 
     def test_invalid_provider_flagged(self):
         from config_check import validate_config
@@ -767,10 +809,30 @@ class _BookingBackendContractTests:
         self.assertTrue(second.created)
         self.assertNotEqual(first.confirmation_id, second.confirmation_id)
 
-    def test_first_confirmation_matches_workshop_id(self):
-        # Deterministic sequence keeps the smoke test and demo story stable.
+    def test_confirmation_id_is_non_guessable_and_phone_safe(self):
+        # goal.md ADR-014: no sequential counter (guessable/enumerable); a
+        # fixed-format random code instead, using an alphabet with confusable
+        # characters removed (0/O, 1/I/L) so it can be spoken and heard
+        # correctly over a phone call.
+        from bookings import _CONFIRMATION_ALPHABET, _CONFIRMATION_CODE_LENGTH
         backend = self._backend()
-        self.assertEqual(backend.create_booking(**self._details()).confirmation_id, "AH-4827")
+        confirmation = backend.create_booking(**self._details()).confirmation_id
+        self.assertTrue(confirmation.startswith("AH-"))
+        code = confirmation[len("AH-"):]
+        self.assertEqual(len(code), _CONFIRMATION_CODE_LENGTH)
+        self.assertTrue(set(code) <= set(_CONFIRMATION_ALPHABET))
+        self.assertNotIn("0", code)
+        self.assertNotIn("1", code)
+
+    def test_many_confirmations_have_no_collisions(self):
+        backend = self._backend()
+        codes = {
+            backend.create_booking(**self._details(
+                guest_name=f"Guest {i}", contact=f"guest{i}@example.com",
+            )).confirmation_id
+            for i in range(25)
+        }
+        self.assertEqual(len(codes), 25)
 
     def test_checkout_before_checkin_rejected(self):
         from bookings import BookingValidationError
@@ -803,6 +865,17 @@ class SqliteBookingBackendTests(_BookingBackendContractTests, unittest.TestCase)
         from bookings import SqliteBookingBackend
         return SqliteBookingBackend(":memory:")
 
+    def test_confirmation_collision_retries_with_a_new_code(self):
+        from bookings import SqliteBookingBackend
+        codes = iter(["AH-AAAAAA", "AH-AAAAAA", "AH-BBBBBB"])
+        backend = SqliteBookingBackend(":memory:", id_generator=lambda: next(codes))
+        first = backend.create_booking(**self._details())
+        self.assertEqual(first.confirmation_id, "AH-AAAAAA")
+        second = backend.create_booking(**self._details(
+            guest_name="Other Guest", contact="other@example.com",
+        ))
+        self.assertEqual(second.confirmation_id, "AH-BBBBBB")
+
 
 def _postgres_env_configured() -> bool:
     return bool(os.getenv("POSTGRES_HOST", "").strip())
@@ -819,9 +892,9 @@ class PostgresBookingBackendTests(_BookingBackendContractTests, unittest.TestCas
 
     TABLE = "bookings_contract_test"
 
-    def _backend(self):
+    def _backend(self, id_generator=None):
         from bookings import PostgresBookingBackend
-        backend = PostgresBookingBackend(
+        kwargs = dict(
             host=os.environ["POSTGRES_HOST"],
             port=int(os.getenv("POSTGRES_PORT", "5432")),
             user=os.environ["POSTGRES_USER"],
@@ -829,8 +902,23 @@ class PostgresBookingBackendTests(_BookingBackendContractTests, unittest.TestCas
             dbname=os.environ["POSTGRES_DB"],
             table_name=self.TABLE,
         )
+        if id_generator is not None:
+            kwargs["id_generator"] = id_generator
+        backend = PostgresBookingBackend(**kwargs)
         self.addCleanup(backend.close)
         return backend
+
+    def test_confirmation_collision_retries_with_a_new_code(self):
+        # Proves our retry logic against the REAL psycopg exception type, not
+        # an assumption about what Postgres raises.
+        codes = iter(["AH-AAAAAA", "AH-AAAAAA", "AH-BBBBBB"])
+        backend = self._backend(id_generator=lambda: next(codes))
+        first = backend.create_booking(**self._details())
+        self.assertEqual(first.confirmation_id, "AH-AAAAAA")
+        second = backend.create_booking(**self._details(
+            guest_name="Other Guest", contact="other@example.com",
+        ))
+        self.assertEqual(second.confirmation_id, "AH-BBBBBB")
 
     def setUp(self):
         # Start each test from a clean, empty table (mirrors SQLite's fresh
