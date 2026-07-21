@@ -27,6 +27,9 @@ _NUMERIC_VARS = (
     ("PROVIDER_MAX_RETRIES", int),
     ("LATENCY_FILLER_MS", int),
     ("LIVEKIT_TOKEN_TTL_MINUTES", int),
+    ("AUTH_SESSION_TTL_HOURS", float),
+    ("AUTH_RATE_LIMIT_PER_HOUR", int),
+    ("AUTH_LOGIN_RATE_LIMIT", int),
 )
 
 

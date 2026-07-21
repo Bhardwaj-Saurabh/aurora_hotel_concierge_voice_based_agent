@@ -19,6 +19,11 @@ numpy              # audio buffers
 # POSTGRES_HOST is set in .env; SQLite/in-memory remains the default.
 psycopg[binary]>=3.1
 
+# talk-server user auth (goal.md ADR-018) — password hashing. Required
+# whenever talk_server.py runs; SqliteAuthBackend (tests only) needs nothing
+# beyond this.
+argon2-cffi>=23.1
+
 # Telemetry mapping to OpenTelemetry spans (goal.md 4.2). The OTLP wire
 # exporter is optional; install it only when exporting to a collector:
 #   pip install opentelemetry-exporter-otlp-proto-http

@@ -6,3 +6,10 @@
 # slim. See livekit/requirements.txt for the room-native worker's deps.
 livekit-api
 openai>=1.30
+
+# User auth (goal.md ADR-018) is now mandatory for talk_server.py — every
+# /token, /agent, /voice-agent, /greeting, /reset request resolves a session
+# via pipeline/auth.py, which requires both of these (Postgres is the only
+# production auth backend; argon2 hashes passwords).
+psycopg[binary]>=3.1
+argon2-cffi>=23.1

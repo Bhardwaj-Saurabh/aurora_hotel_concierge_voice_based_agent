@@ -1,10 +1,16 @@
-"""Offline tests for browser TTS payload selection."""
+"""Offline tests for browser TTS payload selection and the auth HTTP layer."""
 
 from __future__ import annotations
 
 import base64
+import http.client
+import json
+import os
+import threading
 import unittest
 from contextlib import contextmanager
+
+os.environ.setdefault("PROVIDER", "mock")
 
 from talk_server import _browser_tts_payload
 
@@ -97,6 +103,99 @@ class BrowserTtsPayloadTests(unittest.TestCase):
         self.assertEqual(payload, {"ttsBackend": "browser", "ttsFallback": True})
         self.assertEqual(trace.events[0][0], "tts.fallback")
         self.assertNotIn("secret provider response", str(payload))
+
+
+class LiveServerAuthTests(unittest.TestCase):
+    """Integration tests for the auth HTTP layer (goal.md ADR-018), against a
+    real ThreadingHTTPServer on an ephemeral port with a real (in-memory,
+    injected) auth backend — not mocked route-by-route, so this actually
+    proves the cookie/401/429 wiring end to end."""
+
+    @classmethod
+    def setUpClass(cls):
+        os.environ["PROVIDER"] = "mock"
+        os.environ["AUTH_COOKIE_SECURE"] = "false"  # plain http in this test
+        os.environ["AUTH_RATE_LIMIT_PER_HOUR"] = "1000"
+        os.environ["AUTH_LOGIN_RATE_LIMIT"] = "1000"
+
+        import auth
+        auth.set_auth_backend_for_tests(auth.SqliteAuthBackend(":memory:"))
+
+        import talk_server
+        talk_server._reset_rate_limiters_for_tests()
+        from http.server import ThreadingHTTPServer
+        cls.server = ThreadingHTTPServer(("127.0.0.1", 0), talk_server.Handler)
+        cls.port = cls.server.server_address[1]
+        cls.thread = threading.Thread(target=cls.server.serve_forever, daemon=True)
+        cls.thread.start()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.server.shutdown()
+        cls.server.server_close()
+        import auth
+        auth.reset_auth_backend()
+
+    def _request(self, method, path, body=None, cookie=None):
+        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=5)
+        try:
+            headers = {"Content-Type": "application/json"}
+            if cookie:
+                headers["Cookie"] = cookie
+            data = json.dumps(body).encode("utf-8") if body is not None else None
+            conn.request(method, path, body=data, headers=headers)
+            response = conn.getresponse()
+            raw = response.read()
+            payload = json.loads(raw) if raw else {}
+            set_cookie = response.getheader("Set-Cookie")
+            return response.status, payload, set_cookie
+        finally:
+            conn.close()
+
+    def _register(self, email, password="correct horse battery"):
+        status, payload, set_cookie = self._request(
+            "POST", "/auth/register", {"email": email, "password": password},
+        )
+        self.assertEqual(status, 200, payload)
+        return set_cookie.split(";")[0]
+
+    def test_state_is_reachable_without_a_cookie(self):
+        # Regression guard: Fly's health check hits this path with no cookie.
+        status, _payload, _cookie = self._request("GET", "/state")
+        self.assertEqual(status, 200)
+
+    def test_agent_without_a_cookie_is_rejected(self):
+        status, _payload, _cookie = self._request("POST", "/agent", {"text": "hi"})
+        self.assertEqual(status, 401)
+
+    def test_register_login_then_agent_succeeds(self):
+        cookie = self._register("caller@example.com")
+        status, payload, _ = self._request("POST", "/agent", {"text": "hello"}, cookie=cookie)
+        self.assertEqual(status, 200)
+        self.assertIn("reply", payload)
+
+    def test_wrong_password_login_is_rejected(self):
+        self._register("wrongpass@example.com")
+        status, _payload, _cookie = self._request(
+            "POST", "/auth/login",
+            {"email": "wrongpass@example.com", "password": "not the password"},
+        )
+        self.assertEqual(status, 401)
+
+    def test_logout_invalidates_the_session(self):
+        cookie = self._register("logout-test@example.com")
+        self._request("POST", "/auth/logout", cookie=cookie)
+        status, _payload, _cookie = self._request("POST", "/agent", {"text": "hi"}, cookie=cookie)
+        self.assertEqual(status, 401)
+
+    def test_token_identity_is_derived_from_the_authenticated_user_not_the_query_string(self):
+        cookie = self._register("identity-test@example.com")
+        status, payload, _ = self._request(
+            "GET", "/token?identity=someone-elses-name&name=Someone+Else", cookie=cookie,
+        )
+        self.assertEqual(status, 200)
+        self.assertNotEqual(payload["identity"], "someone-elses-name")
+        self.assertIn("someone-elses-name", payload["identity"])
 
 
 if __name__ == "__main__":

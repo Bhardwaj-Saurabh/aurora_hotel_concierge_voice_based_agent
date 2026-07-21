@@ -35,7 +35,7 @@ jobs:
 
       - name: "Gate 2: pipeline unit tests"
         working-directory: pipeline
-        run: python -m unittest -v test_features.py
+        run: python -m unittest -v test_features.py test_auth.py test_rate_limit.py
 
       - name: "Gate 3: eval suites (core + red team)"
         working-directory: evals
@@ -53,6 +53,24 @@ jobs:
   container-talk-server:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    # talk_server.py now hard-requires POSTGRES_HOST (goal.md ADR-018 — the
+    # user-auth system is mandatory, not optional, unlike bookings' Postgres).
+    # A real Postgres service makes this boot check prove the auth-required
+    # container actually starts, not just that it starts without auth wired.
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: aurora
+          POSTGRES_PASSWORD: aurora
+          POSTGRES_DB: aurora
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U aurora"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=10
     steps:
       - uses: actions/checkout@v4
 
@@ -61,10 +79,15 @@ jobs:
 
       - name: "Talk-server boots and serves /state"
         run: |
-          docker run -d --rm --name aurora-talk-server -p 5173:5173 aurora-talk-server
+          docker run -d --rm --name aurora-talk-server --network host \
+            -e POSTGRES_HOST=localhost -e POSTGRES_PORT=5432 \
+            -e POSTGRES_USER=aurora -e POSTGRES_PASSWORD=aurora -e POSTGRES_DB=aurora \
+            -e POSTGRES_SSLMODE=disable \
+            aurora-talk-server
           for i in $(seq 1 15); do
             curl -fsS http://localhost:5173/state && ok=1 && break || sleep 1
           done
+          docker logs aurora-talk-server
           docker stop aurora-talk-server
           test "$ok" = "1"
 

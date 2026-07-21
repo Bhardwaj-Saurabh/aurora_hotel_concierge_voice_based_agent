@@ -338,6 +338,30 @@ point reads them with plain `os.getenv()`, so nothing in the app needs to know o
 value came from. `pipeline/config.example.env` documents every var but must never carry real
 values.
 
+### 7.8 User auth (talk-server)
+
+Closes ADR-015's documented gap: `/token`, `/agent`, `/voice-agent`, `/greeting`, and `/reset`
+now require a logged-in session (goal.md ADR-018). `/state` stays open (Fly's health check and
+the page's pre-login provider badge both need it).
+
+- **Registration is self-service and open** — anyone can create an account at `/auth/register`.
+  There is no email verification and no password-reset-by-email (both would need an
+  email-sending dependency this project doesn't have).
+- **Revocation is CLI-only**, no admin web UI:
+  ```bash
+  cd pipeline
+  python manage_users.py list
+  python manage_users.py disable someone@example.com   # immediately invalidates their sessions
+  python manage_users.py enable someone@example.com
+  ```
+- **Requires Postgres** — `talk_server.py` refuses to start without `POSTGRES_HOST` set; unlike
+  bookings.py, there is no file-backed SQLite fallback for credentials/sessions in production.
+- **Two independent rate limiters**, both in-memory/single-process (reset on restart/deploy;
+  would need a shared store if ever scaled past one machine): `AUTH_RATE_LIMIT_PER_HOUR`
+  (post-auth, per user — the cost-incurring routes) and `AUTH_LOGIN_RATE_LIMIT` (pre-auth, per
+  `client IP, email` — protects `/auth/login` and `/auth/register` themselves).
+- Set `AUTH_COOKIE_SECURE=false` only for local `http://localhost` dev; Fly always serves https.
+
 ---
 
 ## 8. Demo Script (condensed)

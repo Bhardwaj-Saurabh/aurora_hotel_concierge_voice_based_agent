@@ -7,7 +7,27 @@
     <link rel="stylesheet" href="/web/styles.css" />
   </head>
   <body>
-    <main>
+    <section id="auth-gate" class="auth-gate" hidden>
+      <form id="auth-form" class="auth-card" novalidate>
+        <p class="eyebrow">Aurora Voice Operations</p>
+        <h1 id="auth-heading">Log in</h1>
+        <p id="auth-error" class="auth-error" hidden></p>
+        <label>
+          <span>Email</span>
+          <input id="auth-email" type="email" autocomplete="email" required />
+        </label>
+        <label>
+          <span>Password</span>
+          <input id="auth-password" type="password" autocomplete="current-password" required minlength="8" />
+        </label>
+        <div class="auth-actions">
+          <button id="auth-submit" type="submit">Log in</button>
+          <button id="auth-toggle" type="button" class="secondary">Need an account? Register</button>
+        </div>
+      </form>
+    </section>
+
+    <main id="app" hidden>
       <header class="header">
         <div>
           <p class="eyebrow">Local LiveKit session</p>
@@ -17,6 +37,8 @@
           <span class="status-pill" id="language">English</span>
           <span class="status-pill" id="provider">Provider: loading</span>
           <span class="status-pill">aurora-demo-room</span>
+          <span class="status-pill" id="auth-badge">Logged in</span>
+          <button id="auth-logout" type="button" class="secondary">Log out</button>
         </div>
       </header>
 
@@ -127,6 +149,7 @@
       </section>
     </main>
 
+    <script type="module" src="/web/auth.js"></script>
     <script type="module" src="/web/talk.js"></script>
   </body>
 </html>
