@@ -1,5 +1,8 @@
 .DS_Store
 .venv/
+.env
+dist/
+*.egg-info/
 pipeline/.env
 pipeline/.venv/
 livekit/.venv/

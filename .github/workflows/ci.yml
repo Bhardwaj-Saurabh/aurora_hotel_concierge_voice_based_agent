@@ -27,7 +27,9 @@ jobs:
             livekit/requirements.txt
 
       - name: Install dependencies
-        run: python -m pip install -r pipeline/requirements.txt -r livekit/requirements.txt
+        run: |
+          python -m pip install -r pipeline/requirements.txt -r livekit/requirements.txt
+          python -m pip install -e .
 
       - name: "Gate 1: smoke test (offline end-to-end)"
         working-directory: pipeline
