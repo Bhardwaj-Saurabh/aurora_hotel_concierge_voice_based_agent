@@ -7,18 +7,18 @@ with the configured provider, and publishes Aurora's replies as a TTS audio
 track. This replaces the HTTP turn bridge for room-native calls; the bridge
 (`talk_server.py` /voice-agent) remains the documented fallback.
 
-The pipeline `Agent` stays the single brain (ADR-002): the framework's LLM slot
+The aurora `Agent` stays the single brain (ADR-002): the framework's LLM slot
 is overridden with `llm_node`, which feeds the caller's transcript to
 `Agent.respond` and returns the reply text. Tools, routing, guardrails,
 grounding, telemetry, and evals are untouched — the worker is transport.
 
 Run (needs a live provider for STT/TTS; the mock cannot hear or speak):
 
-    source ../.venv/bin/activate
-    python agent_worker.py dev        # against ./start_local_server.sh
-    python agent_worker.py start      # production mode
+    source .venv/bin/activate
+    python -m aurora.worker dev        # against ./scripts/start_local_livekit.sh
+    python -m aurora.worker start      # production mode
 
-STT and TTS reuse the provider presets from pipeline/providers.py — Groq and
+STT and TTS reuse the provider presets from aurora/core/providers.py — Groq and
 OpenAI both speak the OpenAI API dialect, so one plugin covers both via
 base_url, exactly like the pipeline's own adaptor.
 """

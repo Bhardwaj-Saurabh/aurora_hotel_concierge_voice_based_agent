@@ -452,7 +452,7 @@ def reset_auth_backend() -> None:
 def set_auth_backend_for_tests(backend) -> None:
     """Test-only: inject a backend directly (e.g. SqliteAuthBackend), bypassing
     get_auth_backend()'s POSTGRES_HOST requirement so HTTP-layer integration
-    tests (livekit/test_talk_server.py) don't need a live Postgres instance."""
+    tests (tests/test_talk_server.py) don't need a live Postgres instance."""
     global _backend
     with _backend_lock:
         _backend = backend

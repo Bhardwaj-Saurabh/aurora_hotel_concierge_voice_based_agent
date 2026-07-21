@@ -187,7 +187,7 @@ def _pcm_to_wav(pcm_int16: bytes, sample_rate: int) -> io.BytesIO:
 class MockProvider:
     """Drop-in stand-in for Provider. Rule-based LLM, scripted STT, no-op TTS.
 
-    Same interface (chat / transcribe / synthesize) so voice_loop.py and
+    Same interface (chat / transcribe / synthesize) so the voice loop and
     agent.py can't tell the difference. Use for rehearsals, CI, and testing the
     loop without touching Groq/OpenAI. Enable with PROVIDER=mock.
     """

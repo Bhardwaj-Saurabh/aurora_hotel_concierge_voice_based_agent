@@ -1,7 +1,7 @@
 """
 token_utils.py  -  least-privilege LiveKit token minting (goal.md ADR-015).
 
-talk_server.py and create_token.py both minted tokens with identical grants
+The talk server and create_token both minted tokens with identical grants
 and no explicit TTL, defaulting to the SDK's implicit 6-hour expiry. Shared
 here so the two never drift apart on what is fundamentally security config.
 

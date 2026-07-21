@@ -1,5 +1,5 @@
 """
-voice_loop.py  -  the turn loop (Layer A).
+The turn loop (Layer A) — `python -m aurora.voice.loop`.
 
     mic -> VAD endpointing -> STT -> Agent -> TTS -> speakers
 
@@ -7,8 +7,8 @@ with per-stage latency timing so the room can SEE where the ~800ms turn budget
 goes. Provider (Groq/OpenAI) is chosen in .env; see providers.py.
 
 Modes:
-    python voice_loop.py          # real mic
-    python voice_loop.py --text   # type your turn (no audio deps / no mic)  -  always works
+    python -m aurora.voice.loop          # real mic
+    python -m aurora.voice.loop --text   # type your turn (no audio deps / no mic)  -  always works
 """
 
 from __future__ import annotations

@@ -2,10 +2,10 @@
 # token minting + the HTTP turn bridge (/agent, /voice-agent). This is a
 # distinct deployable from the room-native agent worker (Dockerfile.worker):
 # it scales with browser/API traffic, not concurrent calls, and needs no
-# audio stack at all — the browser does VAD/capture. Installs
-# requirements-server.txt (NOT the full livekit/requirements.txt), which
-# deliberately excludes livekit-agents/silero — that pulls in ~70MB of
-# onnxruntime this process never touches.
+# audio stack at all — the browser does VAD/capture. Installs the aurora
+# package's [server] extra (ADR-020), which deliberately excludes
+# livekit-agents/silero — that pulls in ~70MB of onnxruntime this process
+# never touches.
 #
 #   docker build -f Dockerfile.talk-server -t aurora-talk-server .
 #   docker run --rm -p 5173:5173 \

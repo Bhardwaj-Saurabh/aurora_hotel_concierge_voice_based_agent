@@ -10,30 +10,30 @@ has been verified against the current code. Architecture and design rationale li
 
 | Task | Command (from the assignment root) |
 |---|---|
-| Set up once | `uv venv --python 3.12 && source .venv/bin/activate && uv pip install -r pipeline/requirements.txt -r livekit/requirements.txt` |
-| Validate config | `cd pipeline && python config_check.py` |
-| Full offline gates | see §3 (smoke + unit tests + evals + livekit tests) |
-| Talk to Aurora (offline, typed) | `cd pipeline && PROVIDER=mock python voice_loop.py --text` |
-| Talk to Aurora (live, mic) | `cd pipeline && python voice_loop.py` |
+| Set up once | `uv venv --python 3.12 && source .venv/bin/activate && uv pip install -e ".[server,worker,audio,dev]"` |
+| Validate config | `python -m aurora.config.check` |
+| Full offline gates | see §3 (smoke + unit tests + evals + server/worker tests) |
+| Talk to Aurora (offline, typed) | `PROVIDER=mock python -m aurora.voice.loop --text` |
+| Talk to Aurora (live, mic) | `python -m aurora.voice.loop` |
 | Browser demo (HTTP bridge) | §5.1 — three terminals |
-| Room-native agent worker | §5.2 — `python agent_worker.py dev` |
+| Room-native agent worker | §5.2 — `python -m aurora.worker dev` |
 | Run in Docker | §5.3 — two images: `docker build -f Dockerfile.talk-server ...` and `-f Dockerfile.worker ...` |
-| SLO report | `cd pipeline && python slo_report.py --input ../logs/voice-events.jsonl` |
-| Capacity estimate | `cd pipeline && python scale_check.py --dau 1000000` |
+| SLO report | `python -m aurora.ops.slo_report --input logs/voice-events.jsonl` |
+| Capacity estimate | `python -m aurora.ops.scale_check --dau 1000000` |
 | SIP/IVR simulations | `cd mocks && python demo_call.py` / `python ivr_menu_mock.py` |
 
 ---
 
 ## 2. Setup
 
-One virtualenv at the assignment root serves both packages (`pipeline/` and `livekit/`):
+One virtualenv at the assignment root serves the whole `aurora` package (goal.md ADR-020):
 
 ```bash
 cd FDE/Assignment_2_voice_agent
 uv venv --python 3.12
 source .venv/bin/activate
-uv pip install -r pipeline/requirements.txt -r livekit/requirements.txt
-cp pipeline/config.example.env pipeline/.env
+uv pip install -e ".[server,worker,audio,dev]"
+cp config.example.env .env && chmod 600 .env
 ```
 
 Key `.env` settings:
@@ -54,7 +54,7 @@ TELEMETRY_OTLP_ENDPOINT=       # optional OTel collector (see §7.2)
 mid-call stack trace:
 
 ```bash
-cd pipeline && python config_check.py
+python -m aurora.config.check
 ```
 
 Real-mic mode additionally needs PortAudio: `brew install portaudio`. Text mode, evals, the
@@ -69,18 +69,17 @@ Four suites, all running on the mock provider — no key, no network, < 15 s tot
 
 ```bash
 source .venv/bin/activate
-(cd pipeline && python smoke_test.py)                                # scripted end-to-end
-(cd pipeline && python -m unittest -v test_features.py)              # 68 unit tests
-(cd evals && python run_evals.py --suite all)                        # 19 scenarios: core + red-team
-(cd livekit && python -m unittest -v test_talk_server.py test_env_loader.py test_agent_worker.py)
+python -m aurora.ops.smoke                                           # scripted end-to-end
+python -m unittest -v tests.test_features tests.test_auth tests.test_rate_limit tests.test_prompt_registry
+python evals/run_evals.py --suite all                                # 19 scenarios: core + red-team
+python -m unittest -v tests.test_talk_server tests.test_env_loader tests.test_agent_worker tests.test_token_utils
 ```
 
 Run a single eval suite with conversation detail:
 
 ```bash
-cd evals
-python run_evals.py --suite core --verbose
-python run_evals.py --suite red-team --verbose
+python evals/run_evals.py --suite core --verbose
+python evals/run_evals.py --suite red-team --verbose
 ```
 
 **The working rule (EDD):** any change to agent behavior — prompt, tools, guardrails, routing,
@@ -94,8 +93,7 @@ fails, then implementing. Never weaken an eval to make it pass.
 ### 4.1 Offline text mode — always works
 
 ```bash
-cd pipeline
-PROVIDER=mock python voice_loop.py --text
+PROVIDER=mock python -m aurora.voice.loop --text
 ```
 
 Turns worth trying:
@@ -118,7 +116,7 @@ Goodbye                                   → hangup (SIP BYE)
 Set `PROVIDER=openai` or `groq` with its key, then:
 
 ```bash
-python voice_loop.py
+python -m aurora.voice.loop
 ```
 
 Per-turn telemetry prints capture/STT/routing/retrieval/LLM/tools/TTS timings. With a
@@ -140,12 +138,12 @@ Three terminals:
 
 ```bash
 # T1 — local LiveKit server (Docker)
-cd livekit && ./start_local_server.sh
+./scripts/start_local_livekit.sh
 
 # T2 — room + web app
-cd livekit && source ../.venv/bin/activate
-python create_room.py
-python talk_server.py
+source .venv/bin/activate
+python -m aurora.ops.create_room
+python -m aurora.server
 
 # Browser
 open http://localhost:5173     # Start call → allow mic
@@ -163,10 +161,10 @@ incremental TTS, and real barge-in cancellation (interruption stops the provider
 tool work, not just playback). Requires a live provider — the mock can neither hear nor speak:
 
 ```bash
-# with T1's local server running, and PROVIDER=openai|groq in pipeline/.env
-cd livekit && source ../.venv/bin/activate
+# with T1's local server running, and PROVIDER=openai|groq in .env
+source .venv/bin/activate
 LIVEKIT_URL=ws://localhost:7880 LIVEKIT_API_KEY=devkey LIVEKIT_API_SECRET=secret \
-python agent_worker.py dev
+python -m aurora.worker dev
 ```
 
 Join the room from the browser app; the worker is dispatched automatically. Expected log:
@@ -189,7 +187,7 @@ docker run --rm -p 5173:5173 \
 curl http://localhost:5173/state
 ```
 
-`python:3.12-slim`, non-root, installs only `livekit/requirements-server.txt` — no Silero/VAD
+`python:3.12-slim`, non-root, installs only the package's `[server]` extra — no Silero/VAD
 weight, since the browser does capture on this path.
 
 **Room-native worker** (§5.2) — needs a live provider and a reachable LiveKit server:
@@ -249,7 +247,7 @@ tail -n 1 logs/voice-events.jsonl | python3 -m json.tool
 Set `TELEMETRY_OTLP_ENDPOINT` (e.g. `http://localhost:4318/v1/traces`) and install the wire
 exporter (`pip install opentelemetry-exporter-otlp-proto-http`). Each turn becomes one OTel
 trace: a `voice.turn` root span, per-stage child spans, notable events on the root. Redaction
-happens before export. `config_check.py` flags a configured endpoint with a missing exporter.
+happens before export. `aurora.config.check` flags a configured endpoint with a missing exporter.
 
 **Sending traces to Opik Cloud** (goal.md ADR-019): `TELEMETRY_OTLP_HEADERS` is a generic
 `Key1=Value1,Key2=Value2` env var (this module stays vendor-neutral) — Opik needs three:
@@ -265,8 +263,8 @@ Verified live, not assumed from docs: the endpoint without the `/v1/traces` suff
 
 ### 7.2.1 Prompt registry — Opik Cloud
 
-`SYSTEM_PROMPT` (`pipeline/agent.py`) still ships as a Python constant and remains the fallback
-of record. With `OPIK_API_KEY` set, `pipeline/prompt_registry.py` fetches the version tagged for
+`SYSTEM_PROMPT` (`aurora/core/prompts.py`) still ships as a Python constant and remains the fallback
+of record. With `OPIK_API_KEY` set, `aurora/prompt_registry.py` fetches the version tagged for
 Opik's `production` environment instead (falling back to Opik's latest version, then to the local
 constant, on any miss or error — this never dead-ends a call). Every trace records a
 `promptVersion` attribute (`"local"`, `"local-fallback"`, or `"opik:vN"`).
@@ -275,8 +273,7 @@ constant, on any miss or error — this never dead-ends a call). Every trace rec
 full offline eval suite:
 
 ```bash
-cd pipeline
-python promote_prompt.py --version v5
+python -m aurora.ops.promote_prompt --version v5
 ```
 
 This runs `evals/run_evals.py --suite all` with that exact candidate pinned
@@ -287,9 +284,8 @@ to prompt edits made in Opik's UI instead of a code diff.
 ### 7.3 SLO report — the alert primitive
 
 ```bash
-cd pipeline
-python slo_report.py --input ../logs/voice-events.jsonl
-python slo_report.py --input ../logs/voice-events.jsonl \
+python -m aurora.ops.slo_report --input logs/voice-events.jsonl
+python -m aurora.ops.slo_report --input logs/voice-events.jsonl \
   --max-p95-total-ms 800 --max-fallback-rate 0.05 --max-transfer-rate 0.3
 ```
 
@@ -299,7 +295,7 @@ filler / fallback rates. Any `--max-*` breach exits non-zero — run it in CI or
 
 ### 7.4 Bookings
 
-Two backends, same interface (`get_booking_backend()` in `pipeline/bookings.py`), both idempotent
+Two backends, same interface (`get_booking_backend()` in `aurora/storage/bookings.py`), both idempotent
 via session + normalized-details keys:
 
 **SQLite** (default) — `BOOKINGS_DB` set → a durable file; blank → in-memory. Single instance only:
@@ -335,10 +331,10 @@ authoritative (unlisted files are not indexed).
 ```bash
 cp -r knowledge/2026-07-19 knowledge/2026-08-01      # copy newest snapshot
 # edit knowledge/2026-08-01/hotel_policies.md, update manifest.json if files changed
-cd evals && python run_evals.py --suite all           # grounding evals must stay green
+python evals/run_evals.py --suite all                 # grounding evals must stay green
 ```
 
-**Roll back a bad edit** — one line in `pipeline/.env`:
+**Roll back a bad edit** — one line in `.env`:
 
 ```env
 KNOWLEDGE_SNAPSHOT=2026-07-19
@@ -349,7 +345,7 @@ An invalid pin is rejected at startup with the available snapshots listed.
 ### 7.6 Capacity planning
 
 ```bash
-cd pipeline && python scale_check.py --dau 1000000 --cost-per-minute 0.035
+python -m aurora.ops.scale_check --dau 1000000 --cost-per-minute 0.035
 ```
 
 Change every assumption before treating the output as a plan; replace assumptions with
@@ -360,7 +356,7 @@ measured load-test numbers (goal.md 4.3) before production.
 `.env` files are a **local-dev convenience only** — never commit one, and check its permissions:
 
 ```bash
-cd pipeline && python config_check.py    # now flags a world/group-readable .env
+python -m aurora.config.check            # now flags a world/group-readable .env
 chmod 600 .env                            # if flagged
 ```
 
@@ -368,7 +364,7 @@ In production, don't use a `.env` file at all. Inject the exact same env vars
 (`OPENAI_API_KEY`, `POSTGRES_PASSWORD`, `LIVEKIT_API_SECRET`, …) via your platform's secret
 manager (AWS Secrets Manager, HashiCorp Vault, Doppler, Kubernetes Secrets, …) — every entry
 point reads them with plain `os.getenv()`, so nothing in the app needs to know or care where a
-value came from. `pipeline/config.example.env` documents every var but must never carry real
+value came from. `config.example.env` documents every var but must never carry real
 values.
 
 ### 7.8 User auth (talk-server)
@@ -382,12 +378,11 @@ the page's pre-login provider badge both need it).
   email-sending dependency this project doesn't have).
 - **Revocation is CLI-only**, no admin web UI:
   ```bash
-  cd pipeline
-  python manage_users.py list
-  python manage_users.py disable someone@example.com   # immediately invalidates their sessions
-  python manage_users.py enable someone@example.com
+  python -m aurora.ops.manage_users list
+  python -m aurora.ops.manage_users disable someone@example.com   # immediately invalidates their sessions
+  python -m aurora.ops.manage_users enable someone@example.com
   ```
-- **Requires Postgres** — `talk_server.py` refuses to start without `POSTGRES_HOST` set; unlike
+- **Requires Postgres** — `aurora.server` refuses to start without `POSTGRES_HOST` set; unlike
   bookings.py, there is no file-backed SQLite fallback for credentials/sessions in production.
 - **Two independent rate limiters**, both in-memory/single-process (reset on restart/deploy;
   would need a shared store if ever scaled past one machine): `AUTH_RATE_LIMIT_PER_HOUR`
@@ -418,10 +413,10 @@ A 20-minute walkthrough of the full system, offline until step 5:
 
 | Symptom | Resolution |
 |---|---|
-| Startup prints "Configuration problems" | Fix the listed `pipeline/.env` entries; `python config_check.py` re-checks |
+| Startup prints "Configuration problems" | Fix the listed `.env` entries; `python -m aurora.config.check` re-checks |
 | Missing provider key | Run with `PROVIDER=mock`, or set the key for the selected provider |
 | `sounddevice` fails | `brew install portaudio`, or use `--text` mode |
-| Browser can't connect | Keep `start_local_server.sh` running (port 7880) |
+| Browser can't connect | Keep `scripts/start_local_livekit.sh` running (port 7880) |
 | Worker won't start with mock | Expected: a live room needs real STT/TTS — set `PROVIDER=openai|groq` |
 | Worker registered but silent on join | Provider key invalid — check T2 logs for STT/TTS auth errors |
 | Mock ignores what you type/say | Mock STT returns scripted phrases by design; the mock LLM is rule-based |

@@ -3,14 +3,14 @@
 
 "Promotion" means tagging one Opik prompt version for the `production`
 environment — the only version get_system_prompt() will use at runtime
-(pipeline/prompt_registry.py). A version is never hand-tagged; it only
+(aurora/prompt_registry.py). A version is never hand-tagged; it only
 becomes `production` after the full offline eval suite passes against it,
 exactly like every other agent-behavior change in this project (the `edd`
 skill's hard rule, applied here to prompt edits made through Opik's UI
 instead of a code diff).
 
 Usage (needs OPIK_API_KEY / OPIK_WORKSPACE / OPIK_PROJECT_NAME configured):
-    python promote_prompt.py --version v5
+    python -m aurora.ops.promote_prompt --version v5
 """
 
 from __future__ import annotations

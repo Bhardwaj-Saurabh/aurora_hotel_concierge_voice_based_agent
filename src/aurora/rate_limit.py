@@ -1,7 +1,7 @@
 """Sliding-window rate limiter (goal.md ADR-018).
 
 Pure and clock-injectable so tests never need time.sleep. Used twice, with
-different keys and thresholds, by talk_server.py's auth layer:
+different keys and thresholds, by the talk server's auth layer (aurora.server.deps):
   - post-auth cost limiter, keyed by user_id
   - pre-auth brute-force limiter, keyed by (client_ip, email)
 

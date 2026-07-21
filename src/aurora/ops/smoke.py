@@ -5,7 +5,7 @@ Forces PROVIDER=mock and drives scripted turns through the REAL Agent + adaptor,
 asserting that tools fire and control actions (transfer/hangup) surface. Run
 this in CI or before a workshop to confirm the loop is wired correctly.
 
-    python smoke_test.py
+    python -m aurora.ops.smoke
 """
 
 import os

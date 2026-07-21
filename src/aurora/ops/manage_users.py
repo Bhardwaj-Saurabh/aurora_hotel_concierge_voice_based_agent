@@ -3,10 +3,10 @@
 There is no admin web UI. Disabling a user immediately invalidates every
 session they currently hold (auth.py's resolve_session checks is_active).
 
-Usage (from pipeline/, with POSTGRES_* set in the environment or .env):
-    python manage_users.py list
-    python manage_users.py disable someone@example.com
-    python manage_users.py enable someone@example.com
+Usage (from the repo root, with POSTGRES_* set in the environment or .env):
+    python -m aurora.ops.manage_users list
+    python -m aurora.ops.manage_users disable someone@example.com
+    python -m aurora.ops.manage_users enable someone@example.com
 """
 
 from __future__ import annotations
@@ -50,7 +50,7 @@ def main(argv: list[str]) -> int:
 
     if command in ("disable", "enable"):
         if len(argv) != 2:
-            print(f"Usage: python manage_users.py {command} <email>")
+            print(f"Usage: python -m aurora.ops.manage_users {command} <email>")
             return 2
         email = argv[1]
         user_id = _find_user_id(backend, email)
