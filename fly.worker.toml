@@ -11,6 +11,7 @@ primary_region = "iad"
   dockerfile = "Dockerfile.worker"
 
 [[checks]]
+  name = "worker-health"
   type = "tcp"
   port = 8081
   interval = "15s"
