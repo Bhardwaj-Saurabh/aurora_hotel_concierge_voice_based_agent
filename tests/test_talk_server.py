@@ -12,18 +12,17 @@ from contextlib import contextmanager
 
 os.environ.setdefault("PROVIDER", "mock")
 
-from talk_server import _browser_tts_payload
+from aurora.server import app as talk_server
+from aurora.server.app import _browser_tts_payload
 
 
 class SupportedLanguagesTests(unittest.TestCase):
     def test_state_languages_follow_the_router(self):
-        import talk_server
         self.assertEqual(talk_server._supported_languages(), ["en", "es", "fr"])
 
 
 class NormalizedReplyTests(unittest.TestCase):
     def test_finish_response_normalizes_reply_for_speech(self):
-        import talk_server
 
         class FakeAgent:
             last_sources = []
@@ -118,10 +117,9 @@ class LiveServerAuthTests(unittest.TestCase):
         os.environ["AUTH_RATE_LIMIT_PER_HOUR"] = "1000"
         os.environ["AUTH_LOGIN_RATE_LIMIT"] = "1000"
 
-        import auth
+        from aurora.storage import auth
         auth.set_auth_backend_for_tests(auth.SqliteAuthBackend(":memory:"))
 
-        import talk_server
         talk_server._reset_rate_limiters_for_tests()
         from http.server import ThreadingHTTPServer
         cls.server = ThreadingHTTPServer(("127.0.0.1", 0), talk_server.Handler)
@@ -133,7 +131,7 @@ class LiveServerAuthTests(unittest.TestCase):
     def tearDownClass(cls):
         cls.server.shutdown()
         cls.server.server_close()
-        import auth
+        from aurora.storage import auth
         auth.reset_auth_backend()
 
     def _request(self, method, path, body=None, cookie=None):

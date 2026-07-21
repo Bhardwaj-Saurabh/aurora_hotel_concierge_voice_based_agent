@@ -8,7 +8,6 @@ from __future__ import annotations
 import base64
 import json
 import os
-import sys
 import threading
 import warnings
 from io import BytesIO
@@ -18,17 +17,13 @@ from urllib.parse import parse_qs, urlparse
 
 import jwt
 
-from env_loader import load_env_files
+from aurora.config.env import load_env_files
+from aurora.core.spoken_text import normalize_spoken_text
 
 HOST = os.getenv("TALK_HOST", "localhost")
 PORT = int(os.getenv("TALK_PORT", "5173"))
-ROOT = Path(__file__).resolve().parent
-ASSIGNMENT_ROOT = ROOT.parent
-PIPELINE_ROOT = ASSIGNMENT_ROOT / "pipeline"
-
-if str(PIPELINE_ROOT) not in sys.path:
-    sys.path.insert(0, str(PIPELINE_ROOT))
-from spoken_text import normalize_spoken_text  # noqa: E402
+# Static web client ships inside the package (goal.md ADR-020).
+WEB_ROOT = Path(__file__).resolve().parent
 
 _session_registry_lock = threading.Lock()
 _agent_sessions: dict[tuple[int, str], object] = {}
@@ -88,7 +83,7 @@ def _get_cost_limiter():
     global _cost_limiter
     with _limiter_lock:
         if _cost_limiter is None:
-            from rate_limit import SlidingWindowRateLimiter
+            from aurora.rate_limit import SlidingWindowRateLimiter
             limit = int(os.getenv("AUTH_RATE_LIMIT_PER_HOUR", "20") or 20)
             _cost_limiter = SlidingWindowRateLimiter(limit=limit, window_seconds=3600)
         return _cost_limiter
@@ -100,7 +95,7 @@ def _get_login_limiter():
     global _login_limiter
     with _limiter_lock:
         if _login_limiter is None:
-            from rate_limit import SlidingWindowRateLimiter
+            from aurora.rate_limit import SlidingWindowRateLimiter
             limit = int(os.getenv("AUTH_LOGIN_RATE_LIMIT", "5") or 5)
             _login_limiter = SlidingWindowRateLimiter(limit=limit, window_seconds=900)
         return _login_limiter
@@ -114,7 +109,7 @@ def _reset_rate_limiters_for_tests() -> None:
 
 
 def _load_env_files() -> None:
-    load_env_files((PIPELINE_ROOT / ".env", ROOT / ".env"))
+    load_env_files((Path.cwd() / ".env",))
 
 
 def _agent_provider_name() -> str:
@@ -123,7 +118,7 @@ def _agent_provider_name() -> str:
 
 def _supported_languages() -> list[str]:
     """Derive from the router so /state can never drift from the agent."""
-    from router import LANGUAGES
+    from aurora.core.router import LANGUAGES
     return sorted(LANGUAGES)
 
 
@@ -149,10 +144,8 @@ def _livekit_room() -> str:
 
 
 def _new_agent():
-    if str(PIPELINE_ROOT) not in sys.path:
-        sys.path.insert(0, str(PIPELINE_ROOT))
-    from agent import Agent
-    from providers import make_provider
+    from aurora.core.agent import Agent
+    from aurora.core.providers import make_provider
 
     return Agent(make_provider(_agent_provider_name()))
 
@@ -172,15 +165,13 @@ def _reset_session(key: tuple[int, str]) -> None:
 
 
 def _trace(session_id: str, turn_id: str | None = None):
-    if str(PIPELINE_ROOT) not in sys.path:
-        sys.path.insert(0, str(PIPELINE_ROOT))
-    from telemetry import TurnTrace
+    from aurora.telemetry.traces import TurnTrace
 
     return TurnTrace(session_id=session_id, turn_id=turn_id)
 
 
 def _finish_response(agent, trace, reply: str, action: str | None, **extra) -> dict:
-    from telemetry import write_trace
+    from aurora.telemetry.traces import write_trace
 
     reply = normalize_spoken_text(reply)  # browser TTS speaks this verbatim (goal.md 2.4)
     sources = extra.pop("response_sources", agent.last_sources)
@@ -332,7 +323,7 @@ def _is_probable_playback_echo(transcript: str) -> bool:
 def _token(identity: str, name: str, room: str) -> str:
     if _livekit_api_secret() == "secret":
         warnings.filterwarnings("ignore", category=jwt.InsecureKeyLengthWarning)
-    from token_utils import mint_token
+    from aurora.server.token_utils import mint_token
     return mint_token(
         api_key=_livekit_api_key(), api_secret=_livekit_api_secret(),
         identity=identity, name=name, room=room,
@@ -341,7 +332,7 @@ def _token(identity: str, name: str, room: str) -> str:
 
 class Handler(SimpleHTTPRequestHandler):
     def __init__(self, *args, **kwargs):
-        super().__init__(*args, directory=str(ROOT), **kwargs)
+        super().__init__(*args, directory=str(WEB_ROOT), **kwargs)
 
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
@@ -461,9 +452,7 @@ class Handler(SimpleHTTPRequestHandler):
         token = _request_cookie(self, _SESSION_COOKIE)
         if not token:
             return None
-        if str(PIPELINE_ROOT) not in sys.path:
-            sys.path.insert(0, str(PIPELINE_ROOT))
-        from auth import get_auth_backend
+        from aurora.storage.auth import get_auth_backend
         return get_auth_backend().resolve_session(token)
 
     def _require_auth(self) -> int | None:
@@ -485,8 +474,6 @@ class Handler(SimpleHTTPRequestHandler):
         return json.loads(body or b"{}")
 
     def _handle_register(self) -> None:
-        if str(PIPELINE_ROOT) not in sys.path:
-            sys.path.insert(0, str(PIPELINE_ROOT))
         try:
             payload = self._read_json_body()
         except json.JSONDecodeError:
@@ -497,7 +484,7 @@ class Handler(SimpleHTTPRequestHandler):
         if not _get_login_limiter().allow((_client_ip(self), email.strip().lower())):
             return self._send_json({"error": "Too many attempts. Try again later."}, status=429)
 
-        from auth import AuthValidationError, get_auth_backend
+        from aurora.storage.auth import AuthValidationError, get_auth_backend
         backend = get_auth_backend()
         try:
             user_id = backend.register_user(email, password)
@@ -511,8 +498,6 @@ class Handler(SimpleHTTPRequestHandler):
         )
 
     def _handle_login(self) -> None:
-        if str(PIPELINE_ROOT) not in sys.path:
-            sys.path.insert(0, str(PIPELINE_ROOT))
         try:
             payload = self._read_json_body()
         except json.JSONDecodeError:
@@ -523,7 +508,7 @@ class Handler(SimpleHTTPRequestHandler):
         if not _get_login_limiter().allow((_client_ip(self), email.strip().lower())):
             return self._send_json({"error": "Too many attempts. Try again later."}, status=429)
 
-        from auth import get_auth_backend
+        from aurora.storage.auth import get_auth_backend
         backend = get_auth_backend()
         user_id = backend.verify_credentials(email, password)
         if user_id is None:
@@ -536,11 +521,9 @@ class Handler(SimpleHTTPRequestHandler):
         )
 
     def _handle_logout(self) -> None:
-        if str(PIPELINE_ROOT) not in sys.path:
-            sys.path.insert(0, str(PIPELINE_ROOT))
         token = _request_cookie(self, _SESSION_COOKIE)
         if token:
-            from auth import get_auth_backend
+            from aurora.storage.auth import get_auth_backend
             get_auth_backend().revoke_session(token)
         self._send_json(
             {"ok": True}, extra_headers=[("Set-Cookie", _clear_session_cookie_header())],
@@ -550,7 +533,7 @@ class Handler(SimpleHTTPRequestHandler):
         user_id = self._resolve_authenticated_user()
         if user_id is None:
             return self._send_json({"error": "Not authenticated"}, status=401)
-        from auth import get_auth_backend
+        from aurora.storage.auth import get_auth_backend
         backend = get_auth_backend()
         email = next((u["email"] for u in backend.list_users() if u["id"] == user_id), None)
         self._send_json({"email": email})
@@ -566,7 +549,7 @@ class Handler(SimpleHTTPRequestHandler):
         current = str(payload.get("currentPassword", ""))
         new = str(payload.get("newPassword", ""))
 
-        from auth import AuthValidationError, get_auth_backend
+        from aurora.storage.auth import AuthValidationError, get_auth_backend
         backend = get_auth_backend()
         try:
             changed = backend.change_password(user_id, current, new)
@@ -581,11 +564,9 @@ def main() -> None:
     _load_env_files()
     os.environ.setdefault(
         "TELEMETRY_JSONL",
-        str(ASSIGNMENT_ROOT / "logs" / "voice-events.jsonl"),
+        str(Path.cwd() / "logs" / "voice-events.jsonl"),
     )
-    if str(PIPELINE_ROOT) not in sys.path:
-        sys.path.insert(0, str(PIPELINE_ROOT))
-    from config_check import require_valid_config
+    from aurora.config.check import require_valid_config
     require_valid_config()  # fail fast, before the first call (goal.md 2.3)
     if not os.getenv("POSTGRES_HOST", "").strip():
         raise SystemExit(

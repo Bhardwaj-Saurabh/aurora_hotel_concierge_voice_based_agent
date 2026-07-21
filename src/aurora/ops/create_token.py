@@ -19,8 +19,8 @@ from pathlib import Path
 
 import jwt
 
-from env_loader import load_env_files
-from token_utils import mint_token
+from aurora.config.env import load_env_files
+from aurora.server.token_utils import mint_token
 
 LOCAL_DEFAULTS = {
     "LIVEKIT_API_KEY": "devkey",
@@ -30,8 +30,7 @@ LOCAL_DEFAULTS = {
 
 
 def _load_env_files() -> None:
-    root = Path(__file__).resolve().parents[1]
-    load_env_files((root / "pipeline" / ".env", root / "livekit" / ".env"))
+    load_env_files((Path.cwd() / ".env",))
 
 
 def _setting(name: str) -> str:

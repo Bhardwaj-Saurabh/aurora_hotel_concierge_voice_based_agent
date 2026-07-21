@@ -24,9 +24,7 @@ COPY pyproject.toml pyproject.toml
 COPY src/ src/
 RUN pip install --no-cache-dir ".[server]"
 
-COPY pipeline/ pipeline/
 COPY knowledge/ knowledge/
-COPY livekit/ livekit/
 
 ENV PROVIDER=mock \
     TALK_HOST=0.0.0.0 \
@@ -41,4 +39,4 @@ EXPOSE 5173
 RUN mkdir -p /app/logs && useradd --create-home aurora && chown -R aurora /app/logs
 USER aurora
 
-CMD ["python", "livekit/talk_server.py"]
+CMD ["python", "-m", "aurora.server"]

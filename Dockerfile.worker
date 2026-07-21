@@ -31,9 +31,7 @@ COPY pyproject.toml pyproject.toml
 COPY src/ src/
 RUN pip install --no-cache-dir ".[worker]"
 
-COPY pipeline/ pipeline/
 COPY knowledge/ knowledge/
-COPY livekit/ livekit/
 
 ENV KNOWLEDGE_DIR=/app/knowledge \
     TELEMETRY_JSONL=/app/logs/voice-events.jsonl \
@@ -45,4 +43,4 @@ EXPOSE 8081
 RUN mkdir -p /app/logs && useradd --create-home aurora && chown -R aurora /app/logs
 USER aurora
 
-CMD ["python", "livekit/agent_worker.py", "start"]
+CMD ["python", "-m", "aurora.worker", "start"]

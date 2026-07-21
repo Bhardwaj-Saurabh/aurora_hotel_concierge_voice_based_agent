@@ -1,4 +1,7 @@
-import { Room, RoomEvent, Track } from "/node_modules/livekit-client/dist/livekit-client.esm.mjs";
+// Vendored build (goal.md ADR-020): the deployed image never shipped
+// node_modules (.dockerignore), so the old /node_modules import 404'd in
+// production. The packaged copy always resolves.
+import { Room, RoomEvent, Track } from "/web/vendor/livekit-client.esm.mjs";
 
 const callerRoot = document.querySelector('[data-client="caller"]');
 const agentRoot = document.querySelector('[data-client="agent"]');

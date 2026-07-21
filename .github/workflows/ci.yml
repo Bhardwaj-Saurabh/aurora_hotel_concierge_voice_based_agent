@@ -36,9 +36,8 @@ jobs:
       - name: "Gate 3: eval suites (core + red team)"
         run: python evals/run_evals.py --suite all
 
-      - name: "Gate 4: livekit unit tests"
-        working-directory: livekit
-        run: python -m unittest -v test_talk_server.py test_env_loader.py test_agent_worker.py test_token_utils.py
+      - name: "Gate 4: server + worker unit tests"
+        run: python -m unittest -v tests.test_talk_server tests.test_env_loader tests.test_agent_worker tests.test_token_utils
 
   # Two images, two jobs (ADR-012): the talk-server (web-facing, scales with
   # HTTP traffic) and the room-native worker (job worker, scales with

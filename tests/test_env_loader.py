@@ -8,7 +8,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from env_loader import load_env_files, parse_env_value
+from aurora.config.env import load_env_files, parse_env_value
 
 
 class ParseEnvValueTests(unittest.TestCase):

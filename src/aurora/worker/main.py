@@ -27,24 +27,18 @@ from __future__ import annotations
 
 import asyncio
 import os
-import sys
 import threading
 from pathlib import Path
-
-ROOT = Path(__file__).resolve().parent
-PIPELINE_ROOT = ROOT.parent / "pipeline"
-if str(PIPELINE_ROOT) not in sys.path:
-    sys.path.insert(0, str(PIPELINE_ROOT))
 
 from livekit import agents
 from livekit.agents import AgentSession, JobContext, WorkerOptions, cli, get_job_context
 from livekit.plugins import openai as openai_plugin
 from livekit.plugins import silero
 
-from agent import Agent as AuroraBrain, FILLER_MESSAGES  # noqa: E402  (pipeline)
-from env_loader import load_env_files  # noqa: E402
-from providers import DEFAULT_STT_PROMPT, PRESETS, make_provider  # noqa: E402
-from telemetry import TurnTrace, write_trace  # noqa: E402
+from aurora.config.env import load_env_files
+from aurora.core.agent import Agent as AuroraBrain, FILLER_MESSAGES
+from aurora.core.providers import DEFAULT_STT_PROMPT, PRESETS, make_provider
+from aurora.telemetry.traces import TurnTrace, write_trace
 
 GREETING = "Thanks for calling Aurora Hotel reservations. How can I help?"
 _STREAM_END = object()  # sentinel closing the brain→TTS delta queue
@@ -56,7 +50,7 @@ def _require_live_provider(name: str) -> None:
         print(
             f"PROVIDER={name!r} cannot drive a live room: the worker needs real "
             "STT and TTS. Set PROVIDER=openai or PROVIDER=groq (with its API key) "
-            "in pipeline/.env. The offline mock path lives in voice_loop.py --text."
+            "in .env. The offline mock path lives in `python -m aurora.voice.loop --text`."
         )
         raise SystemExit(2)
 
@@ -228,12 +222,12 @@ async def entrypoint(ctx: JobContext) -> None:
 
 
 def main() -> None:
-    load_env_files((PIPELINE_ROOT / ".env", ROOT / ".env"))
+    load_env_files((Path.cwd() / ".env",))
     os.environ.setdefault(
         "TELEMETRY_JSONL",
-        str(ROOT.parent / "logs" / "voice-events.jsonl"),
+        str(Path.cwd() / "logs" / "voice-events.jsonl"),
     )
-    from config_check import require_valid_config
+    from aurora.config.check import require_valid_config
     require_valid_config()
     _require_live_provider(os.getenv("PROVIDER", "mock").lower())
     cli.run_app(WorkerOptions(entrypoint_fnc=entrypoint))

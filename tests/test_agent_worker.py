@@ -4,13 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import os
-import sys
 import unittest
-from pathlib import Path
-
-PIPELINE = Path(__file__).resolve().parent.parent / "pipeline"
-if str(PIPELINE) not in sys.path:
-    sys.path.insert(0, str(PIPELINE))
 
 os.environ.setdefault("PROVIDER", "mock")
 os.environ.setdefault("TTS_BACKEND", "print")
@@ -26,9 +20,9 @@ def _chat_ctx(*turns: tuple[str, str]):
 
 
 def _room_agent():
-    import agent_worker
-    from agent import Agent
-    from providers import make_provider
+    from aurora.worker import main as agent_worker
+    from aurora.core.agent import Agent
+    from aurora.core.providers import make_provider
 
     class Recording(agent_worker.AuroraRoomAgent):
         def __init__(self):
@@ -43,7 +37,7 @@ def _room_agent():
 
 class LatestUserTextTests(unittest.TestCase):
     def test_reads_last_user_message_not_assistant(self):
-        import agent_worker
+        from aurora.worker import main as agent_worker
 
         ctx = _chat_ctx(
             ("user", "What is the pet policy?"),
@@ -53,7 +47,7 @@ class LatestUserTextTests(unittest.TestCase):
         self.assertEqual(agent_worker._latest_user_text(ctx), "And parking?")
 
     def test_empty_context_is_empty_string(self):
-        import agent_worker
+        from aurora.worker import main as agent_worker
 
         self.assertEqual(agent_worker._latest_user_text(_chat_ctx()), "")
 
@@ -94,9 +88,9 @@ class CancellationTests(unittest.TestCase):
     def test_aclose_stops_the_producer_thread(self):
         import time
 
-        import agent_worker
-        from agent import Agent
-        from providers import MockProvider
+        from aurora.worker import main as agent_worker
+        from aurora.core.agent import Agent
+        from aurora.core.providers import MockProvider
         from types import SimpleNamespace as NS
 
         class SlowStream(MockProvider):
@@ -153,9 +147,9 @@ class WorkerLatencyFillerTests(unittest.TestCase):
     def _room_agent_with_delay(self, delay_s: float):
         import time as time_mod
 
-        import agent_worker
-        from agent import Agent
-        from providers import MockProvider
+        from aurora.worker import main as agent_worker
+        from aurora.core.agent import Agent
+        from aurora.core.providers import MockProvider
         from types import SimpleNamespace as NS
 
         class DelayedStream(MockProvider):
@@ -176,7 +170,7 @@ class WorkerLatencyFillerTests(unittest.TestCase):
 
     def test_filler_plays_when_brain_is_slow(self):
         from unittest.mock import patch
-        import agent_worker
+        from aurora.worker import main as agent_worker
 
         agent = self._room_agent_with_delay(delay_s=0.1)
         with patch.dict(os.environ, {"LATENCY_FILLER_MS": "20"}):
@@ -185,7 +179,7 @@ class WorkerLatencyFillerTests(unittest.TestCase):
         self.assertIn("Two dogs are allowed.", "".join(pieces[1:]))
 
     def test_no_filler_when_brain_is_fast(self):
-        import agent_worker
+        from aurora.worker import main as agent_worker
         from unittest.mock import patch
 
         agent = self._room_agent_with_delay(delay_s=0.0)
@@ -203,7 +197,7 @@ class WorkerLatencyFillerTests(unittest.TestCase):
 
     def test_filler_event_traced_and_speaks_session_language(self):
         from unittest.mock import patch
-        import agent_worker
+        from aurora.worker import main as agent_worker
 
         agent = self._room_agent_with_delay(delay_s=0.1)
         agent._brain.router.set_language("fr")  # current_language derives from
@@ -216,13 +210,13 @@ class WorkerLatencyFillerTests(unittest.TestCase):
 
 class WorkerConfigTests(unittest.TestCase):
     def test_mock_provider_is_rejected_for_live_rooms(self):
-        import agent_worker
+        from aurora.worker import main as agent_worker
 
         with self.assertRaises(SystemExit):
             agent_worker._require_live_provider("mock")
 
     def test_live_providers_accepted(self):
-        import agent_worker
+        from aurora.worker import main as agent_worker
 
         agent_worker._require_live_provider("openai")
         agent_worker._require_live_provider("groq")
