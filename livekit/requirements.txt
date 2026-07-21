@@ -3,3 +3,7 @@ openai>=1.30
 
 # Room-native agent worker (goal.md 3.1): VAD/turn detection + STT/TTS plugins.
 livekit-agents[openai,silero]~=1.6
+
+# Prompt registry (goal.md Phase 4.5, ADR-019) — same optional-with-fallback
+# story as requirements-server.txt.
+opik

@@ -366,8 +366,11 @@ class Agent:
     """LLM + tool loop for one call. Holds conversation history."""
 
     def __init__(self, provider: Provider):
+        from prompt_registry import get_system_prompt
+
         self.provider = provider
-        self.messages: list[dict] = [{"role": "system", "content": SYSTEM_PROMPT}]
+        self.system_prompt, self.prompt_version = get_system_prompt(SYSTEM_PROMPT)
+        self.messages: list[dict] = [{"role": "system", "content": self.system_prompt}]
         self.router = AgentRouter()
         self.current_language = "en"
         self.current_locale = LANGUAGES["en"]["locale"]
@@ -411,7 +414,7 @@ class Agent:
             route = self.router.route()
             self.current_language = route.language
             self.current_locale = route.locale
-            self.messages[0]["content"] = f"{SYSTEM_PROMPT}\n\n{self.router.instruction()}"
+            self.messages[0]["content"] = f"{self.system_prompt}\n\n{self.router.instruction()}"
         trace.event(
             "router.selected",
             language=route.language,
@@ -424,6 +427,7 @@ class Agent:
             "locale": route.locale,
             "provider": getattr(self.provider, "name", "unknown"),
             "model": getattr(self.provider, "llm_model", "unknown"),
+            "promptVersion": self.prompt_version,
         })
         trace.event("caller.transcript", text=user_text)
         self.messages.append({"role": "user", "content": user_text})
@@ -628,7 +632,7 @@ class Agent:
                             self.current_language = language_route.language
                             self.current_locale = language_route.locale
                             self.messages[0]["content"] = (
-                                f"{SYSTEM_PROMPT}\n\n{self.router.instruction()}"
+                                f"{self.system_prompt}\n\n{self.router.instruction()}"
                             )
                             trace.attributes.update({
                                 "language": language_route.language,

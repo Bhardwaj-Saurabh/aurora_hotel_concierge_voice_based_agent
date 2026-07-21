@@ -26,6 +26,23 @@ _provider = None
 _warned = False
 
 
+def _parse_otlp_headers(raw: str) -> dict:
+    """Parse TELEMETRY_OTLP_HEADERS ("Key1=Value1,Key2=Value2") into a dict
+    for OTLPSpanExporter(headers=...). Generic on purpose (goal.md ADR-019) —
+    this module stays vendor-neutral (ADR-009); Opik just happens to require
+    three headers (Authorization, projectName, Comet-Workspace), but nothing
+    here knows that."""
+    headers = {}
+    for entry in (raw or "").split(","):
+        if "=" not in entry:
+            continue
+        key, value = entry.split("=", 1)
+        key = key.strip()
+        if key:
+            headers[key] = value.strip()
+    return headers
+
+
 def _to_ns(started_at: float, offset_ms: float) -> int:
     return int((started_at + offset_ms / 1000.0) * 1_000_000_000)
 
@@ -153,11 +170,12 @@ def _otlp_provider(endpoint: str):
                     "opentelemetry-exporter-otlp-proto-http"
                 )
             return None
+        headers = _parse_otlp_headers(os.getenv("TELEMETRY_OTLP_HEADERS", ""))
         provider = TracerProvider(
             resource=Resource.create({"service.name": "aurora-voice-agent"})
         )
         provider.add_span_processor(
-            BatchSpanProcessor(OTLPSpanExporter(endpoint=endpoint))
+            BatchSpanProcessor(OTLPSpanExporter(endpoint=endpoint, headers=headers or None))
         )
         _provider = provider
         return provider

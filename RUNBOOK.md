@@ -251,6 +251,35 @@ exporter (`pip install opentelemetry-exporter-otlp-proto-http`). Each turn becom
 trace: a `voice.turn` root span, per-stage child spans, notable events on the root. Redaction
 happens before export. `config_check.py` flags a configured endpoint with a missing exporter.
 
+**Sending traces to Opik Cloud** (goal.md ADR-019): `TELEMETRY_OTLP_HEADERS` is a generic
+`Key1=Value1,Key2=Value2` env var (this module stays vendor-neutral) — Opik needs three:
+
+```bash
+TELEMETRY_OTLP_ENDPOINT=https://www.comet.com/opik/api/v1/private/otel
+TELEMETRY_OTLP_HEADERS=Authorization=<OPIK_API_KEY>,projectName=<project>,Comet-Workspace=<workspace>
+```
+
+### 7.2.1 Prompt registry — Opik Cloud
+
+`SYSTEM_PROMPT` (`pipeline/agent.py`) still ships as a Python constant and remains the fallback
+of record. With `OPIK_API_KEY` set, `pipeline/prompt_registry.py` fetches the version tagged for
+Opik's `production` environment instead (falling back to Opik's latest version, then to the local
+constant, on any miss or error — this never dead-ends a call). Every trace records a
+`promptVersion` attribute (`"local"`, `"local-fallback"`, or `"opik:vN"`).
+
+**Promotion is eval-gated, not manual** — a version only becomes `production` after it passes the
+full offline eval suite:
+
+```bash
+cd pipeline
+python promote_prompt.py --version v5
+```
+
+This runs `evals/run_evals.py --suite all` with that exact candidate pinned
+(`OPIK_PROMPT_VERSION_OVERRIDE`), and only tags it for `production` in Opik if every scenario
+passes — the same eval-first discipline every other agent-behavior change goes through, applied
+to prompt edits made in Opik's UI instead of a code diff.
+
 ### 7.3 SLO report — the alert primitive
 
 ```bash

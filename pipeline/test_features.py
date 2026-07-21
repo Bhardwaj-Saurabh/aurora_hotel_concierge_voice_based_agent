@@ -262,6 +262,44 @@ class OtelExportTests(unittest.TestCase):
         self.assertNotIn("secret words", blob)   # content omitted before export
 
 
+class OtlpHeadersParsingTests(unittest.TestCase):
+    """TELEMETRY_OTLP_HEADERS (goal.md ADR-019) — generic so telemetry_otel.py
+    stays vendor-neutral (ADR-009); Opik just happens to need three of them
+    (Authorization, projectName, Comet-Workspace)."""
+
+    def test_empty_string_yields_no_headers(self):
+        from telemetry_otel import _parse_otlp_headers
+        self.assertEqual(_parse_otlp_headers(""), {})
+
+    def test_parses_multiple_key_value_pairs(self):
+        from telemetry_otel import _parse_otlp_headers
+        raw = "Authorization=secret-key,projectName=aurora-hotel,Comet-Workspace=my-workspace"
+        self.assertEqual(_parse_otlp_headers(raw), {
+            "Authorization": "secret-key",
+            "projectName": "aurora-hotel",
+            "Comet-Workspace": "my-workspace",
+        })
+
+    def test_tolerates_surrounding_whitespace(self):
+        from telemetry_otel import _parse_otlp_headers
+        raw = " Authorization = secret-key , projectName = aurora-hotel "
+        self.assertEqual(_parse_otlp_headers(raw), {
+            "Authorization": "secret-key",
+            "projectName": "aurora-hotel",
+        })
+
+    def test_value_may_itself_contain_an_equals_sign(self):
+        from telemetry_otel import _parse_otlp_headers
+        self.assertEqual(
+            _parse_otlp_headers("Authorization=abc=def"),
+            {"Authorization": "abc=def"},
+        )
+
+    def test_malformed_entry_without_equals_is_skipped(self):
+        from telemetry_otel import _parse_otlp_headers
+        self.assertEqual(_parse_otlp_headers("not-well-formed,projectName=x"), {"projectName": "x"})
+
+
 class SloReportTests(unittest.TestCase):
     def _payloads(self):
         def turn(total, action=None, events=(), timings=None):
@@ -680,6 +718,33 @@ class ConfigCheckTests(unittest.TestCase):
         from config_check import validate_config
         problems = validate_config({"PROVIDER": "banana"})
         self.assertTrue(any("PROVIDER" in p for p in problems))
+
+    def test_malformed_otlp_headers_flagged(self):
+        from config_check import validate_config
+        problems = validate_config({
+            "PROVIDER": "mock", "TELEMETRY_OTLP_HEADERS": "no-equals-sign-here",
+        })
+        self.assertTrue(any("TELEMETRY_OTLP_HEADERS" in p for p in problems))
+
+    def test_well_formed_otlp_headers_pass(self):
+        from config_check import validate_config
+        problems = validate_config({
+            "PROVIDER": "mock",
+            "TELEMETRY_OTLP_HEADERS": "Authorization=key,projectName=aurora-hotel",
+        })
+        self.assertFalse(any("TELEMETRY_OTLP_HEADERS" in p for p in problems))
+
+    def test_opik_api_key_without_the_package_installed_is_flagged(self):
+        from config_check import validate_config
+        with patch.dict("sys.modules", {"opik": None}):
+            problems = validate_config({"PROVIDER": "mock", "OPIK_API_KEY": "fake-key"})
+        self.assertTrue(any("OPIK_API_KEY" in p for p in problems))
+
+    def test_no_opik_api_key_is_fine_without_the_package(self):
+        from config_check import validate_config
+        with patch.dict("sys.modules", {"opik": None}):
+            problems = validate_config({"PROVIDER": "mock"})
+        self.assertFalse(any("OPIK_API_KEY" in p for p in problems))
 
     def test_live_provider_requires_matching_key(self):
         from config_check import validate_config

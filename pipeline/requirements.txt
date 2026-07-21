@@ -28,3 +28,9 @@ argon2-cffi>=23.1
 # exporter is optional; install it only when exporting to a collector:
 #   pip install opentelemetry-exporter-otlp-proto-http
 opentelemetry-sdk
+
+# Prompt registry (goal.md Phase 4.5, ADR-011/019). Only touched when
+# OPIK_API_KEY is set (pipeline/prompt_registry.py imports it lazily) — with
+# no key, the local SYSTEM_PROMPT constant is used and this package is never
+# imported.
+opik

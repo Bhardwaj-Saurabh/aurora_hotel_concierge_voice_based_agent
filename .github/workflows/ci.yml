@@ -35,7 +35,7 @@ jobs:
 
       - name: "Gate 2: pipeline unit tests"
         working-directory: pipeline
-        run: python -m unittest -v test_features.py test_auth.py test_rate_limit.py
+        run: python -m unittest -v test_features.py test_auth.py test_rate_limit.py test_prompt_registry.py
 
       - name: "Gate 3: eval suites (core + red team)"
         working-directory: evals

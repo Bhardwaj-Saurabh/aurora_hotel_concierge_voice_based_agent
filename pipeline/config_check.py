@@ -96,6 +96,25 @@ def validate_config(env: Mapping[str, str] | None = None) -> list[str]:
                 "pip install opentelemetry-sdk opentelemetry-exporter-otlp-proto-http"
             )
 
+    otlp_headers = _value(env, "TELEMETRY_OTLP_HEADERS")
+    if otlp_headers:
+        bad_entries = [entry for entry in otlp_headers.split(",") if "=" not in entry]
+        if bad_entries:
+            problems.append(
+                f"TELEMETRY_OTLP_HEADERS has a malformed entry (no '='): {bad_entries[0]!r}. "
+                "Expected \"Key1=Value1,Key2=Value2\" (goal.md ADR-019)."
+            )
+
+    if _value(env, "OPIK_API_KEY"):
+        try:
+            import opik  # noqa: F401
+        except ImportError:
+            problems.append(
+                "OPIK_API_KEY is set but the opik package is not installed: pip install opik "
+                "(goal.md ADR-019) — otherwise the prompt registry silently falls back to the "
+                "local prompt on every call."
+            )
+
     pin = _value(env, "KNOWLEDGE_SNAPSHOT")
     if pin:
         from knowledge import KNOWLEDGE_ROOT, _snapshot_dirs
