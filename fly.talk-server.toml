@@ -1,0 +1,37 @@
+# Aurora talk-server (goal.md ADR-012) — web-facing HTTP bridge + LiveKit
+# token minting. Deploy: fly deploy -c fly.talk-server.toml
+app = "aurora-hotel-talk-server"
+primary_region = "iad"
+
+[build]
+  dockerfile = "Dockerfile.talk-server"
+
+[env]
+  TALK_HOST = "0.0.0.0"
+  TALK_PORT = "5173"
+
+[[services]]
+  internal_port = 5173
+  protocol = "tcp"
+  auto_stop_machines = "stop"
+  auto_start_machines = true
+  min_machines_running = 0
+
+  [[services.ports]]
+    port = 443
+    handlers = ["tls", "http"]
+  [[services.ports]]
+    port = 80
+    handlers = ["http"]
+    force_https = true
+
+  [[services.http_checks]]
+    interval = "15s"
+    timeout = "5s"
+    grace_period = "10s"
+    method = "GET"
+    path = "/state"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"

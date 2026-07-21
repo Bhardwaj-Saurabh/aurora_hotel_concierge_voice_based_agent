@@ -1,12 +1,15 @@
-# Offline verification gates (goal.md 4.1). Everything runs on the mock
-# provider — no API keys, no network calls to model providers. A PR that
-# breaks a gate does not merge.
+# Offline verification gates (goal.md 4.1) + CD to Fly.io. Gates run on the
+# mock provider — no API keys, no network calls to model providers. A PR
+# that breaks a gate does not merge. A push to main that passes every gate
+# deploys automatically; workflow_dispatch allows a manual redeploy (e.g.
+# after only updating Fly secrets, with no new commit).
 name: CI
 
 on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
 
 jobs:
   gates:
@@ -100,3 +103,33 @@ jobs:
           docker stop aurora-worker
           docker stop lk-server
           test "$ok" = "1"
+
+  # Deploy to Fly.io (goal.md 4.1/4.3) — only on a merge to main, never a PR
+  # (untrusted PR code must never deploy), and only after every gate above
+  # passes. Two apps, two jobs, two app-scoped tokens (not one org-wide
+  # token) — least privilege, same reasoning as ADR-015's token scoping.
+  deploy-talk-server:
+    needs: [gates, container-talk-server, container-worker]
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - run: curl -L https://fly.io/install.sh | sh
+      - name: fly deploy talk-server
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN_TALK_SERVER }}
+        run: $HOME/.fly/bin/flyctl deploy -c fly.talk-server.toml --remote-only
+
+  deploy-worker:
+    needs: [gates, container-talk-server, container-worker]
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - run: curl -L https://fly.io/install.sh | sh
+      - name: fly deploy worker
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN_WORKER }}
+        run: $HOME/.fly/bin/flyctl deploy -c fly.worker.toml --remote-only
