@@ -982,5 +982,23 @@ class ScaleTests(unittest.TestCase):
         self.assertEqual(result["workers"], 181)
 
 
+class LoadTestPercentileTests(unittest.TestCase):
+    """load_test.py (goal.md 4.3) drives real network calls against a live
+    deployment — not exercised here — but its pure percentile math is."""
+
+    def test_percentile_on_empty_list_is_zero(self):
+        from load_test import _percentile
+        self.assertEqual(_percentile([], 0.95), 0.0)
+
+    def test_median_of_five_values(self):
+        from load_test import _percentile
+        self.assertEqual(_percentile([1, 2, 3, 4, 5], 0.5), 3)
+
+    def test_p95_picks_a_high_but_not_the_max_value_for_a_large_sample(self):
+        from load_test import _percentile
+        values = list(range(1, 101))  # 1..100
+        self.assertEqual(_percentile(values, 0.95), 95)
+
+
 if __name__ == "__main__":
     unittest.main()
