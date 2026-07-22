@@ -116,7 +116,9 @@ def _voice_agent_reply(
                 transcript = agent.provider.transcribe(b"")
         else:
             audio_file = BytesIO(audio)
-            if "mp4" in content_type:
+            if "wav" in content_type:
+                audio_file.name = "caller.wav"
+            elif "mp4" in content_type:
                 audio_file.name = "caller.mp4"
             elif "ogg" in content_type:
                 audio_file.name = "caller.ogg"

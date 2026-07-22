@@ -352,13 +352,24 @@ async function sendAudio(blob, wasBargeIn) {
 }
 
 // --- continuous voice capture (mirrors the console's auto-VAD + barge-in) ---
+//
+// Raw PCM is captured continuously via a ScriptProcessorNode (not just once
+// speech is detected): the VAD's own speechConfirmationMs delay means the
+// recorder would otherwise start ~100ms after the caller actually started
+// talking, systematically clipping the first phoneme of short words like
+// "I'd" — Whisper then hallucinates a plausible-but-wrong replacement (e.g.
+// "Who'd"), observed live 2026-07-22. A rolling pre-roll buffer is prepended
+// to every captured utterance so nothing at the start is ever lost.
 
 let listenStream = null;
 let audioContext = null;
 let analyser = null;
+let scriptNode = null;
+let muteNode = null;
 let vadFrame = null;
-let recorder = null;
-let recordedChunks = [];
+let isCapturingUtterance = false;
+let preRollChunks = [];
+let activeUtteranceChunks = [];
 let recordingStartedAt = 0;
 let lastSpeechAt = 0;
 let speechCandidateAt = 0;
@@ -367,10 +378,12 @@ let bargeRecordingCandidate = false;
 let listenCooldownUntil = 0;
 let noiseFloor = 0.008;
 let smoothedLevel = 0;
-let discardRecording = false;
 let lastEndpointAt = 0;
 let pendingBargeInTurn = false;
 let currentTurnWasBargeIn = false;
+
+const PCM_CHUNK_SIZE = 4096;
+const PRE_ROLL_CHUNKS = 6; // ~500ms at a 48kHz-ish sample rate
 
 const tuning = {
   endpointSilenceMs: 650,
@@ -400,42 +413,63 @@ function thresholds() {
   };
 }
 
+function encodeWav(chunks, sampleRate) {
+  const length = chunks.reduce((sum, chunk) => sum + chunk.length, 0);
+  const buffer = new ArrayBuffer(44 + length * 2);
+  const view = new DataView(buffer);
+  const writeString = (offset, str) => {
+    for (let i = 0; i < str.length; i++) view.setUint8(offset + i, str.charCodeAt(i));
+  };
+  writeString(0, "RIFF");
+  view.setUint32(4, 36 + length * 2, true);
+  writeString(8, "WAVE");
+  writeString(12, "fmt ");
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true); // PCM
+  view.setUint16(22, 1, true); // mono
+  view.setUint32(24, sampleRate, true);
+  view.setUint32(28, sampleRate * 2, true); // byte rate (16-bit mono)
+  view.setUint16(32, 2, true); // block align
+  view.setUint16(34, 16, true); // bits per sample
+  writeString(36, "data");
+  view.setUint32(40, length * 2, true);
+  let offset = 44;
+  for (const chunk of chunks) {
+    for (let i = 0; i < chunk.length; i++, offset += 2) {
+      const clamped = Math.max(-1, Math.min(1, chunk[i]));
+      view.setInt16(offset, clamped < 0 ? clamped * 0x8000 : clamped * 0x7fff, true);
+    }
+  }
+  return new Blob([view], { type: "audio/wav" });
+}
+
 function startTurnRecording(isBargeIn = false) {
-  if (!listenStream || recorder || agentBusy) return;
-  recordedChunks = [];
-  discardRecording = false;
-  recorder = new MediaRecorder(listenStream);
+  if (!listenStream || isCapturingUtterance || agentBusy) return;
+  isCapturingUtterance = true;
+  activeUtteranceChunks = preRollChunks.slice(); // copy: don't share the array being reset below
   currentTurnWasBargeIn = isBargeIn || pendingBargeInTurn;
   pendingBargeInTurn = false;
   recordingStartedAt = Date.now();
   lastSpeechAt = recordingStartedAt;
   micButton.dataset.recording = "true";
-  recorder.ondataavailable = (event) => {
-    if (event.data.size > 0) recordedChunks.push(event.data);
-  };
-  recorder.onstop = () => {
-    const shouldDiscard = discardRecording;
-    const mimeType = recorder.mimeType || "audio/webm";
-    const blob = new Blob(recordedChunks, { type: mimeType });
-    recorder = null;
-    recordedChunks = [];
-    micButton.dataset.recording = "false";
-    const wasBargeIn = currentTurnWasBargeIn;
-    currentTurnWasBargeIn = false;
-    if (shouldDiscard || blob.size < 800) {
-      if (listenStream) setStatus(agentSpeaking ? "Aurora is speaking…" : "Listening…");
-      return;
-    }
-    sendAudio(blob, wasBargeIn);
-  };
-  recorder.start(100);
   setStatus("Listening to you…");
 }
 
 function stopTurnRecording(discard = false) {
-  if (!recorder || recorder.state === "inactive") return;
-  discardRecording = discard;
-  recorder.stop();
+  if (!isCapturingUtterance) return;
+  isCapturingUtterance = false;
+  micButton.dataset.recording = "false";
+  const chunks = activeUtteranceChunks;
+  activeUtteranceChunks = [];
+  const wasBargeIn = currentTurnWasBargeIn;
+  currentTurnWasBargeIn = false;
+  const totalSamples = chunks.reduce((sum, chunk) => sum + chunk.length, 0);
+  if (discard || totalSamples < 4000) {
+    if (listenStream) setStatus(agentSpeaking ? "Aurora is speaking…" : "Listening…");
+    return;
+  }
+  const blob = encodeWav(chunks, audioContext.sampleRate);
+  sendAudio(blob, wasBargeIn);
 }
 
 function interruptAgent() {
@@ -453,7 +487,7 @@ function vadLoop() {
   smoothedLevel = (smoothedLevel * 0.72) + (rawLevel * 0.28);
   const limit = thresholds();
 
-  if (!recorder && !agentSpeaking && !agentBusy && smoothedLevel < limit.start) {
+  if (!isCapturingUtterance && !agentSpeaking && !agentBusy && smoothedLevel < limit.start) {
     noiseFloor = (noiseFloor * 0.985) + (rawLevel * 0.015);
   }
 
@@ -485,7 +519,7 @@ function vadLoop() {
       playbackEchoFloor = (playbackEchoFloor * 0.995) + (smoothedLevel * 0.005);
     }
   } else if (!agentBusy && now > listenCooldownUntil) {
-    if (!recorder) {
+    if (!isCapturingUtterance) {
       if (smoothedLevel > limit.start) {
         speechCandidateAt = speechCandidateAt || now;
         if (now - speechCandidateAt >= tuning.speechConfirmationMs) {
@@ -525,6 +559,30 @@ async function armMic() {
   analyser = audioContext.createAnalyser();
   analyser.fftSize = 1024;
   source.connect(analyser);
+
+  // Continuous raw-PCM capture (goal.md live debugging pass, 2026-07-22): a
+  // rolling pre-roll buffer so the recorder-equivalent never clips the start
+  // of an utterance. ScriptProcessorNode must reach the destination to fire
+  // onaudioprocess in some browsers; route through a zero-gain node so the
+  // caller never hears their own mic looped back.
+  preRollChunks = [];
+  activeUtteranceChunks = [];
+  scriptNode = audioContext.createScriptProcessor(PCM_CHUNK_SIZE, 1, 1);
+  muteNode = audioContext.createGain();
+  muteNode.gain.value = 0;
+  source.connect(scriptNode);
+  scriptNode.connect(muteNode);
+  muteNode.connect(audioContext.destination);
+  scriptNode.onaudioprocess = (event) => {
+    const chunk = new Float32Array(event.inputBuffer.getChannelData(0));
+    if (isCapturingUtterance) {
+      activeUtteranceChunks.push(chunk);
+    } else {
+      preRollChunks.push(chunk);
+      if (preRollChunks.length > PRE_ROLL_CHUNKS) preRollChunks.shift();
+    }
+  };
+
   micButton.dataset.armed = "true";
   micButton.title = "Listening naturally — click to stop";
   setStatus("Calibrating…");
@@ -536,10 +594,13 @@ async function armMic() {
 function disarmMic() {
   if (vadFrame) cancelAnimationFrame(vadFrame);
   vadFrame = null;
-  if (recorder && recorder.state !== "inactive") {
-    discardRecording = true;
-    recorder.stop();
-  }
+  isCapturingUtterance = false;
+  preRollChunks = [];
+  activeUtteranceChunks = [];
+  scriptNode?.disconnect();
+  scriptNode = null;
+  muteNode?.disconnect();
+  muteNode = null;
   listenStream?.getTracks().forEach((track) => track.stop());
   listenStream = null;
   audioContext?.close();
@@ -562,7 +623,7 @@ micButton.addEventListener("click", () => {
   }
 });
 
-if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) {
+if (!navigator.mediaDevices?.getUserMedia || !(window.AudioContext || window.webkitAudioContext)) {
   micButton.disabled = true;
   micButton.title = "Voice capture isn't supported in this browser — type instead.";
 }
