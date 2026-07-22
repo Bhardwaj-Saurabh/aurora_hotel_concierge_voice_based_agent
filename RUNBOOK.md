@@ -6,6 +6,62 @@ has been verified against the current code. Architecture and design rationale li
 
 ---
 
+## 0. Delivery Status
+
+**Base assignment — all delivered, all verified green today:** 163 unit tests
+(`test_features`/`test_auth`/`test_rate_limit`/`test_prompt_registry`/`test_talk_server`/
+`test_env_loader`/`test_agent_worker`/`test_token_utils`), 23/23 eval scenarios (core + red-team).
+
+| Deliverable | Status | Evidence |
+|---|:---:|---|
+| Deterministic mock-provider agent (text mode) | ✅ | `PROVIDER=mock python -m aurora.voice.loop --text`; §3 smoke gate |
+| Live provider, identical agent code | ✅ | OpenAI/Groq via `.env` — same `Agent`, no code changes (two-layer split) |
+| Tools: availability, booking, lookup, room service | ✅ | `check_availability` / `create_booking` / `lookup_booking` / `get_room_service_hours` |
+| RAG grounding on hotel policy | ✅ | SQLite FTS5 over `hotel_policies.md`, cited as `file.md#Section` |
+| Guardrails: off-topic, medical/legal/financial, injection, privacy | ✅ | red-team suite, §3 |
+| Multilingual routing (EN / ES / FR) | ✅ | explicit-request gate, §4.1 |
+| Local voice cascade (mic, VAD, STT → LLM → TTS) | ✅ | §4.2 — real-mic run verified locally |
+| LiveKit room demo | ✅ | HTTP bridge (§5.1) **and** room-native worker (§5.2) |
+| Turn-taking & barge-in | ✅ | client-side + server-side (streaming) cancellation |
+| Telemetry | ✅ | JSONL + optional OTel + Opik Cloud, §7.1/7.2 |
+| Evaluation & red-teaming | ✅ | 23/23 deterministic scenarios, plus automated live-model eval (§3.1) |
+| Scale check | ✅ | `aurora.ops.scale_check`, §7.6 |
+| SIP/IVR — simulated | ✅ | `mocks/demo_call.py`, `mocks/ivr_menu_mock.py` |
+| SIP/IVR — real phone number via LiveKit SIP | ⏳ not started | goal.md Phase 3.4 — the one item still just a plan, not code |
+
+### What we delivered beyond the assignment
+
+The assignment asks for a workshop-grade demo. Aurora went further, end to end, into a
+genuinely deployable service (`goal.md`, Phases 2–5, ADR-007 through ADR-021) — two live
+production URLs, not a local-only demo:
+
+| Category | Extra delivered | Detail |
+|---|---|---|
+| **Durability** | Real, persistent bookings | Postgres-backed, idempotent on retry, non-guessable confirmation IDs, self-healing schema migration |
+| | Existing-reservation lookup | `lookup_booking` — privacy-preserving (code alone, or name **and** contact both matching) |
+| **Security** | Full user authentication | Email + password, argon2 hashing, dual rate limiters, session state scoped per-user |
+| | LiveKit token hardening | Every non-essential grant explicitly denied, 60-min TTL (was an implicit 6 hours) |
+| | Secrets hygiene | Fail-fast check rejects a world-readable `.env` |
+| | PII policy | Documented retention policy; redaction on by default, content logging is an explicit opt-in |
+| **Reliability** | Guaranteed failure fallbacks | Timeout/retry → re-prompt → transfer; TTS/STT fallback — a call never goes silent |
+| | Spoken-output hygiene | Markdown/formatting stripped before TTS |
+| | Perceived-latency masking | Natural filler phrase on slow turns, traced as an SLO signal |
+| | Knowledge versioning | Date-stamped snapshots + manifest; a bad policy edit is a one-line rollback |
+| **Voice quality** | Streaming cascade | First-token streaming LLM + incremental TTS, not batch-and-play |
+| | Distributed barge-in cancellation | Interruption cancels in-flight LLM/TTS work server-side, not just playback |
+| | STT pre-roll fix | Continuous PCM capture eliminates clipped-first-word transcription errors |
+| **Observability & eval** | OTel export + SLO reporting | p50/p95 latency, transfer/completion/barge-in/filler rates, alertable thresholds |
+| | Opik-backed prompt registry | Versioned prompts, eval-gated promotion — a prompt edit can't silently reach real calls |
+| | Automated post-deploy live eval | Runs on **every** deploy, logs a real Opik Experiment against the live model, no manual trigger |
+| | Measured load test | Real concurrency numbers against the live deployment, not just the assumption calculator |
+| **Deployment** | Two live Fly.io apps | Gated CD (`needs: [gates, container-*]`), app-scoped tokens, split images (talk-server vs. worker) |
+| | Installable package + FastAPI | Src-layout `aurora` package, one venv, no `sys.path` hacks, one HTTP framework instead of hand-rolled `http.server` |
+| | Postgres-only | No SQLite/in-memory fallback anywhere — dev, tests, or production |
+| **Product** | Public marketing website + chat widget | Room/rate/policy copy sourced from the same data the RAG-grounded agent uses, so they can't drift apart |
+| **Real bugs found & fixed live** | STT clipping, temperature-driven off-topic misfire, language-switch routing gap, TTS pace/naturalness | Each reproduced against the live model/deployment and fixed with evidence, not guessed at (goal.md ADR-003/004) |
+
+---
+
 ## 1. Quick Reference
 
 | Task | Command (from the assignment root) |
