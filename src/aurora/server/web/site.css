@@ -360,6 +360,7 @@ button { font-family: inherit; cursor: pointer; }
 }
 .chat-send { background: var(--gold-500); color: var(--navy-900); }
 .chat-send:hover { background: var(--gold-600); }
+.chat-mic[data-armed="true"] { background: var(--navy-700); color: white; }
 .chat-mic[data-recording="true"] { background: #e3453b; color: white; animation: pulse 1.1s ease-in-out infinite; }
 .chat-mic:disabled, .chat-send:disabled { opacity: 0.5; cursor: not-allowed; }
 
