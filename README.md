@@ -30,7 +30,9 @@ continuously evaluated against the live model in production.
 
 ## 🚀 Live Deployment
 
-Aurora is deployed and running right now — not a local-only demo.
+Aurora is deployed and running right now on a live production environment.
+
+![](docs/aurora.png)
 
 | App | Role | Scaling | Status |
 |---|---|---|---|
