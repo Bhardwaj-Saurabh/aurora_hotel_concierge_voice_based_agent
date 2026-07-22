@@ -332,6 +332,7 @@ class PostgresBookingBackend:
                 .format(schema=sql.Identifier(user))
             )
         self._create_table()
+        self._heal_missing_columns()
 
     def _create_table(self) -> None:
         from psycopg import sql
@@ -351,6 +352,62 @@ class PostgresBookingBackend:
                 "  created_at TIMESTAMPTZ NOT NULL DEFAULT now()"
                 ")"
             ).format(table=sql.Identifier(self._table)))
+
+    def _heal_missing_columns(self) -> None:
+        """Defensive migration (goal.md, found live 2026-07-22): `CREATE TABLE
+        IF NOT EXISTS` above never alters an already-existing table, so a
+        column added to this schema after a table was first created would
+        otherwise silently never reach it — exactly what happened in
+        production with `confirmation_id` (invisible until a real booking
+        was attempted; every create_booking call failed until fixed).
+        Backfills each pre-existing row with its own freshly generated,
+        unique confirmation_id — never a shared placeholder, which would
+        violate the UNIQUE constraint added below if more than one row
+        needed healing."""
+        from psycopg import sql
+
+        with self._lock:
+            existing = {
+                row[0] for row in self._conn.execute(
+                    "SELECT column_name FROM information_schema.columns "
+                    "WHERE table_name = %s AND table_schema = current_schema()",
+                    (self._table,),
+                ).fetchall()
+            }
+            if "confirmation_id" in existing:
+                return
+            table = sql.Identifier(self._table)
+            self._conn.execute(
+                sql.SQL("ALTER TABLE {table} ADD COLUMN confirmation_id TEXT")
+                .format(table=table)
+            )
+            rows = self._conn.execute(
+                sql.SQL("SELECT id FROM {table} WHERE confirmation_id IS NULL")
+                .format(table=table)
+            ).fetchall()
+            for (row_id,) in rows:
+                for _ in range(_MAX_CONFIRMATION_RETRIES):
+                    candidate = self._id_generator()
+                    try:
+                        self._conn.execute(
+                            sql.SQL("UPDATE {table} SET confirmation_id = %s WHERE id = %s")
+                            .format(table=table),
+                            (candidate, row_id),
+                        )
+                        break
+                    except self._psycopg.errors.UniqueViolation:
+                        continue
+            self._conn.execute(
+                sql.SQL("ALTER TABLE {table} ALTER COLUMN confirmation_id SET NOT NULL")
+                .format(table=table)
+            )
+            self._conn.execute(
+                sql.SQL("ALTER TABLE {table} ADD CONSTRAINT {constraint} UNIQUE (confirmation_id)")
+                .format(
+                    table=table,
+                    constraint=sql.Identifier(f"{self._table}_confirmation_id_key"),
+                )
+            )
 
     def create_booking(
         self,

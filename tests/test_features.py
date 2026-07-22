@@ -1070,6 +1070,55 @@ class PostgresBookingBackendTests(_BookingBackendContractTests, unittest.TestCas
         probe.reset_for_tests()
         probe.close()
 
+    def test_self_heals_a_table_missing_confirmation_id(self):
+        """goal.md, found live 2026-07-22: `CREATE TABLE IF NOT EXISTS` never
+        alters an already-existing table, so a production `bookings` table
+        created before `confirmation_id` existed silently broke every
+        create_booking call — invisible until a real booking was attempted.
+        Reproduces that exact drift against a real table, then proves the
+        backend heals it on construction rather than erroring."""
+        import psycopg
+
+        conn = psycopg.connect(
+            host=os.environ["POSTGRES_HOST"], port=int(os.getenv("POSTGRES_PORT", "5432")),
+            user=os.environ["POSTGRES_USER"], password=os.environ["POSTGRES_PASSWORD"],
+            dbname=os.environ["POSTGRES_DB"], autocommit=True,
+        )
+        user = os.environ["POSTGRES_USER"]
+        conn.execute(f'SET search_path TO "{user}", public')
+        conn.execute(f'DROP TABLE IF EXISTS "{self.TABLE}"')
+        # The pre-ADR-014 schema: no confirmation_id column at all.
+        conn.execute(
+            f'CREATE TABLE "{self.TABLE}" ('
+            "  id BIGSERIAL PRIMARY KEY,"
+            "  idempotency_key TEXT UNIQUE NOT NULL,"
+            "  session_id TEXT NOT NULL,"
+            "  check_in TEXT NOT NULL,"
+            "  check_out TEXT NOT NULL,"
+            "  guests INTEGER NOT NULL,"
+            "  room_type TEXT NOT NULL,"
+            "  guest_name TEXT NOT NULL,"
+            "  contact TEXT NOT NULL,"
+            "  created_at TIMESTAMPTZ NOT NULL DEFAULT now()"
+            ")"
+        )
+        conn.execute(
+            f'INSERT INTO "{self.TABLE}" (idempotency_key, session_id, check_in, check_out,'
+            " guests, room_type, guest_name, contact) VALUES"
+            " ('legacy-key', 'legacy-session', 'August 1', 'August 2', 1, 'standard',"
+            " 'Legacy Guest', 'legacy@example.com')"
+        )
+        conn.close()
+
+        backend = self._backend()  # constructing it must self-heal the table
+        record = backend.create_booking(**self._details())
+        self.assertTrue(record.created)
+        found = backend.find_booking(confirmation_id=record.confirmation_id)
+        self.assertIsNotNone(found)
+        legacy = backend.find_booking(guest_name="Legacy Guest", contact="legacy@example.com")
+        self.assertIsNotNone(legacy)
+        self.assertIsNotNone(legacy["confirmation_id"])
+
 
 class TelemetryTests(unittest.TestCase):
     def test_tool_and_language_events_are_visible(self):
