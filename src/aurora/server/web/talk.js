@@ -277,7 +277,9 @@ async function speakWithBrowserVoice(text, locale, token) {
   }
   const utterance = new SpeechSynthesisUtterance(text);
   utterance.lang = locale;
-  utterance.rate = 0.98;
+  // ~10% brisker than the prior 0.98 (live debugging pass, 2026-07-22) —
+  // matches the provider-side TTS_SPEED bump in aurora.core.providers.
+  utterance.rate = 1.08;
   utterance.pitch = 1.0;
   if (voice) utterance.voice = voice;
 

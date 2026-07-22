@@ -32,6 +32,9 @@ PRESETS = {
         "stt_model": "whisper-large-v3-turbo",
         "tts_model": "canopylabs/orpheus-v1-english",
         "tts_voice": "troy",
+        # Orpheus's speech endpoint has unconfirmed support for a numeric speed
+        # control; leave it at the API default until that's verified live.
+        "tts_speed": "1.0",
     },
     "openai": {
         "base_url": None,                # SDK default endpoint
@@ -40,6 +43,9 @@ PRESETS = {
         "stt_model": "whisper-1",
         "tts_model": "tts-1",
         "tts_voice": "alloy",
+        # ~10% brisker than the API default (1.0), per a live debugging pass
+        # (2026-07-22): the default pace read as sluggish over the phone.
+        "tts_speed": "1.1",
     },
 }
 
@@ -49,7 +55,9 @@ DEFAULT_STT_PROMPT = (
     "pet policy, parking, breakfast, accessibility, habitación, reserva, política de "
     "cancelación, mascotas, estacionamiento, desayuno, accesibilidad, chambre, "
     "réservation, politique d'annulation, animaux, stationnement, petit déjeuner, "
-    "accessibilité."
+    "accessibilité. Callers may ask to switch to English, Spanish, or French, or say "
+    "español or français. Callers often spell out an email address aloud, for example "
+    "john dot smith at gmail dot com, or jane underscore doe at yahoo dot com."
 )
 
 
@@ -95,6 +103,7 @@ class Provider:
         self.stt_prompt = _env_or_default("STT_PROMPT", DEFAULT_STT_PROMPT)
         self.tts_model = _env_or_default("TTS_MODEL", p["tts_model"])
         self.tts_voice = _env_or_default("TTS_VOICE", p["tts_voice"])
+        self.tts_speed = float(_env_or_default("TTS_SPEED", p["tts_speed"]))
         self.tts_instructions = os.getenv("TTS_INSTRUCTIONS")
         # "provider" = cloud TTS; "system" = local system voice command.
         self.tts_backend = os.getenv("TTS_BACKEND", "provider").lower()
@@ -159,6 +168,7 @@ class Provider:
             "voice": self.tts_voice,
             "input": text,
             "response_format": "wav",
+            "speed": self.tts_speed,
         }
         if self.tts_instructions:
             speech_args["instructions"] = self.tts_instructions

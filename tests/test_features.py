@@ -113,6 +113,15 @@ class RetrievalTests(unittest.TestCase):
             "search_hotel_knowledge",
         )
 
+    def test_explicit_language_name_forces_set_language(self):
+        """Hybrid routing (ADR-003) must not leave language switching entirely
+        to the LLM's own judgment: real STT transcripts are noisy, and an
+        unforced tool call is one plausible-sounding LLM response away from
+        never firing. Mirrors the search_hotel_knowledge force above."""
+        self.assertEqual(required_tool_for("Please switch to Spanish."), "set_language")
+        self.assertEqual(required_tool_for("Can we continue in English?"), "set_language")
+        self.assertEqual(required_tool_for("Parlez francais, s'il vous plait."), "set_language")
+
     def test_forced_tool_choice_is_sent_on_first_model_call(self):
         class RecordingProvider(MockProvider):
             def __init__(self):
@@ -135,6 +144,27 @@ class RetrievalTests(unittest.TestCase):
         )
         self.assertIsNone(provider.tool_choices[1])
         self.assertIn("tool.route_selected", [event["name"] for event in trace.events])
+
+    def test_language_switch_tool_choice_is_forced_on_first_model_call(self):
+        class RecordingProvider(MockProvider):
+            def __init__(self):
+                super().__init__()
+                self.tool_choices = []
+
+            def chat(self, messages, tools=None, tool_choice=None):
+                self.tool_choices.append(tool_choice)
+                return super().chat(messages, tools=tools, tool_choice=tool_choice)
+
+        provider = RecordingProvider()
+        agent = Agent(provider)
+        trace = TurnTrace(session_id="test", turn_id="forced-language")
+        agent.respond("Please switch to Spanish.", trace=trace)
+
+        self.assertEqual(
+            provider.tool_choices[0],
+            {"type": "function", "function": {"name": "set_language"}},
+        )
+        self.assertEqual(agent.current_language, "es")
 
 
 def _stream_chunk(content=None, tool_calls=None):

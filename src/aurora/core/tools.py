@@ -221,11 +221,21 @@ def explicit_language_request(text: str, language: str) -> bool:
 
 
 def required_tool_for(text: str) -> str | None:
-    """Route high-confidence knowledge intents before probabilistic LLM selection."""
+    """Route high-confidence intents before probabilistic LLM selection.
+
+    Language switching used to be left entirely to the LLM's own tool-call
+    judgment, unlike the knowledge-grounding force below. Live STT transcripts
+    are noisy; an unforced tool call is one plausible-sounding LLM response
+    away from silently never firing (goal.md debugging pass, 2026-07-22).
+    Checked first: an explicit language name is an unambiguous signal that
+    should win even if the same utterance also mentions a policy topic.
+    """
+    tokens = _normalized_tokens(text)
+    if any(set(tokens) & names for names in _LANGUAGE_NAMES.values()):
+        return "set_language"
     normalized = " ".join(text.lower().split())
     if any(phrase in normalized for phrase in _KNOWLEDGE_INTENT_PHRASES):
         return "search_hotel_knowledge"
-    tokens = _normalized_tokens(text)
     if _has_fuzzy_term(tokens, _FUZZY_AMENITY_TERMS):
         return "search_hotel_knowledge"
     has_policy = _has_fuzzy_term(tokens, ("policy", "politica", "politique"))
