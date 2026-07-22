@@ -14,10 +14,11 @@ here is directly comparable to the offline gate, not a parallel definition of
 correctness. `run_case()` takes an optional `provider_name`, defaulting to
 "mock" for the gate; this script passes the real one.
 
-Booking safety: forces an in-memory SQLite booking backend regardless of
-POSTGRES_HOST in .env, so a scenario that completes create_booking can never
-write a row into the production bookings table (same carefulness as
-load_test.py's read-only-question choice, goal.md Phase 4.3).
+Booking safety (goal.md ADR-021: Postgres-only, no local fallback): a
+disposable, uniquely-named table is injected via
+set_booking_backend_for_tests, so a scenario that completes create_booking
+can never write a row into the production bookings table (same carefulness
+as load_test.py's read-only-question choice, goal.md Phase 4.3).
 
 Usage:
     python evals/run_live_evals.py --suite all --trials 3
@@ -38,12 +39,6 @@ try:
 except ModuleNotFoundError:
     pass
 
-# Never let a live-eval run touch the real bookings table (goal.md 4.3
-# precedent) — set before any aurora.storage.bookings use, regardless of
-# what POSTGRES_HOST is configured in .env for the real deployment.
-os.environ["BOOKINGS_DB"] = ":memory:"
-os.environ.pop("POSTGRES_HOST", None)
-
 # Captured before importing run_evals: that module unconditionally sets
 # PROVIDER=mock at import time (it's the offline gate's own substrate,
 # ADR-004) — importing it here would silently clobber the real provider
@@ -52,6 +47,17 @@ _REQUESTED_PROVIDER = os.getenv("PROVIDER", "").strip().lower()
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from run_evals import load_cases, run_case  # noqa: E402
+
+# run_evals's own import already injected a disposable "bookings_gate_test"
+# backend as a side effect — re-inject with a distinct table name so a live
+# run never shares state with an offline gate run that happens concurrently.
+from aurora.storage.bookings import (  # noqa: E402
+    new_disposable_backend_for_offline_gates,
+    set_booking_backend_for_tests,
+)
+set_booking_backend_for_tests(
+    new_disposable_backend_for_offline_gates("bookings_live_eval_test")
+)
 
 _DATASET_NAME = "aurora-live-eval-scenarios"
 _DEFAULT_PROJECT = os.getenv("OPIK_EVAL_PROJECT_NAME", "aurora-hotel-evals")

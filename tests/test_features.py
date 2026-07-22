@@ -791,14 +791,6 @@ class ConfigCheckTests(unittest.TestCase):
         })
         self.assertTrue(any("TELEMETRY_JSONL" in p for p in problems))
 
-    def test_unopenable_bookings_db_flagged(self):
-        from aurora.config.check import validate_config
-        problems = validate_config({
-            "PROVIDER": "mock",
-            "BOOKINGS_DB": "/dev/null/nested/bookings.db",
-        })
-        self.assertTrue(any("BOOKINGS_DB" in p for p in problems))
-
     def test_bad_numeric_flagged(self):
         from aurora.config.check import validate_config
         problems = validate_config({"PROVIDER": "mock", "ENDPOINT_SILENCE_MS": "fast"})
@@ -995,34 +987,13 @@ class _BookingBackendContractTests:
         self.assertIsNone(backend.find_booking())
 
 
-class SqliteBookingBackendTests(_BookingBackendContractTests, unittest.TestCase):
-    def _backend(self):
-        from aurora.storage.bookings import SqliteBookingBackend
-        return SqliteBookingBackend(":memory:")
-
-    def test_confirmation_collision_retries_with_a_new_code(self):
-        from aurora.storage.bookings import SqliteBookingBackend
-        codes = iter(["AH-AAAAAA", "AH-AAAAAA", "AH-BBBBBB"])
-        backend = SqliteBookingBackend(":memory:", id_generator=lambda: next(codes))
-        first = backend.create_booking(**self._details())
-        self.assertEqual(first.confirmation_id, "AH-AAAAAA")
-        second = backend.create_booking(**self._details(
-            guest_name="Other Guest", contact="other@example.com",
-        ))
-        self.assertEqual(second.confirmation_id, "AH-BBBBBB")
-
-
-def _postgres_env_configured() -> bool:
-    return bool(os.getenv("POSTGRES_HOST", "").strip())
-
-
-@unittest.skipUnless(_postgres_env_configured(), "POSTGRES_HOST not configured; skipping live Postgres tests")
 class PostgresBookingBackendTests(_BookingBackendContractTests, unittest.TestCase):
-    """Runs for real against the configured Postgres instance (goal.md ADR-013).
+    """Runs for real against the configured Postgres instance (goal.md
+    ADR-013/020 — Postgres-only, no SQLite anywhere, so this always runs;
+    CI's gates job provides a real postgres:16 service).
 
     Uses a disposable, uniquely-named table — never the production `bookings`
-    table — dropped and recreated per test for the same isolation SQLite's
-    `:memory:` gives for free.
+    table — dropped and recreated per test.
     """
 
     TABLE = "bookings_contract_test"
@@ -1118,6 +1089,33 @@ class PostgresBookingBackendTests(_BookingBackendContractTests, unittest.TestCas
         legacy = backend.find_booking(guest_name="Legacy Guest", contact="legacy@example.com")
         self.assertIsNotNone(legacy)
         self.assertIsNotNone(legacy["confirmation_id"])
+
+
+class BookingBackendSelectionTests(unittest.TestCase):
+    """goal.md ADR-021: no local-database fallback — a misconfigured deploy
+    must fail loudly, not silently persist bookings to a throwaway store."""
+
+    def tearDown(self):
+        from aurora.storage.bookings import reset_booking_backend
+        reset_booking_backend()
+
+    def test_missing_postgres_host_raises_instead_of_falling_back(self):
+        from aurora.storage.bookings import get_booking_backend, reset_booking_backend
+        reset_booking_backend()
+        with patch.dict(os.environ, {"POSTGRES_HOST": ""}):
+            with self.assertRaises(RuntimeError):
+                get_booking_backend()
+
+    def test_set_booking_backend_for_tests_bypasses_construction(self):
+        from aurora.storage.bookings import (
+            get_booking_backend,
+            reset_booking_backend,
+            set_booking_backend_for_tests,
+        )
+        reset_booking_backend()
+        sentinel = object()
+        set_booking_backend_for_tests(sentinel)
+        self.assertIs(get_booking_backend(), sentinel)
 
 
 class TelemetryTests(unittest.TestCase):

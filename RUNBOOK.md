@@ -43,7 +43,7 @@ PROVIDER=mock                  # mock (offline) | openai | groq
 OPENAI_API_KEY=                # only the selected provider's key is required
 TTS_BACKEND=system             # system = free local voice; provider = cloud TTS ($)
 TELEMETRY_JSONL=../logs/voice-events.jsonl
-BOOKINGS_DB=../logs/bookings.db    # blank = in-memory (bookings vanish on restart)
+POSTGRES_HOST=                 # required (goal.md ADR-021) — bookings and auth both need it
 ENDPOINT_SILENCE_MS=600        # pause that ends a caller turn
 LATENCY_FILLER_MS=1200         # "One moment." if a turn thinks longer; 0 disables
 KNOWLEDGE_SNAPSHOT=            # blank = newest knowledge/YYYY-MM-DD/; set to roll back
@@ -98,14 +98,23 @@ python evals/run_live_evals.py --suite all --trials 3          # logs to Opik (n
 python evals/run_live_evals.py --suite red-team --trials 5 --local-only   # no Opik, just a report
 ```
 
-Booking-safe by construction: forces `BOOKINGS_DB=:memory:` and drops `POSTGRES_HOST` before
-anything runs, so a completed booking flow never writes into the real bookings table. Costs real
-API calls — this is a manual/periodic check, not a CI gate. `--trials` matters: temperature-driven
+**Runs automatically on every deploy** (`.github/workflows/ci.yml`'s `post-deploy-eval` job,
+goal.md 2026-07-22) — no manual trigger needed. Non-blocking (`continue-on-error`): live evals are
+a quality signal, not a merge gate, and the deploy has already happened by the time this runs.
+Booking-safe by construction: injects a disposable, uniquely-named Postgres table (goal.md
+ADR-021 — no local-database fallback exists to fall back to), so a completed booking flow never
+writes into the real bookings table. Costs real API calls. `--trials` matters: temperature-driven
 misclassification is intermittent (one real bug was only 3/8 at the old temperature, invisible to
 a single manual test). Read failures individually before treating a low `scenario_passed` score as
 a regression — the grading is calibrated to `MockProvider`'s exact canned wording/tool sequences,
 so a real model saying something equally correct differently, or correctly asking for missing
 details before calling a tool, shows up as a "failure" that isn't actually a bug.
+
+The same job also syncs `SYSTEM_PROMPT` to Opik's Prompt Library (`python -m
+aurora.ops.sync_prompt`) — a new version only if the text actually changed (`create_prompt` is
+idempotent on identical text). This keeps Opik's Prompt Library from ever silently missing a
+prompt edit. **Promotion to the `production` environment stays a separate, deliberate step** —
+`promote_prompt.py`, run manually after reviewing the eval results — never auto-promoted.
 
 ---
 
@@ -316,22 +325,14 @@ filler / fallback rates. Any `--max-*` breach exits non-zero — run it in CI or
 
 ### 7.4 Bookings
 
-Two backends, same interface (`get_booking_backend()` in `aurora/storage/bookings.py`), both idempotent
-via session + normalized-details keys:
-
-**SQLite** (default) — `BOOKINGS_DB` set → a durable file; blank → in-memory. Single instance only:
-
-```bash
-sqlite3 logs/bookings.db 'SELECT confirmation_id, guest_name, check_in, check_out FROM bookings;'
-```
-
-**Postgres** (goal.md ADR-013) — set `POSTGRES_HOST`/`PORT`/`USER`/`PASSWORD`/`DB` to make this
-the active backend instead; needed the moment more than one process writes bookings (a worker
-pool, ADR-012), since idempotency across separate SQLite files can't be guaranteed. Atomicity
-comes from `INSERT ... ON CONFLICT (idempotency_key) DO NOTHING` at the database level, not an
-application lock. `POSTGRES_SSLMODE` defaults to `prefer` — hosted free-tier providers often
-don't actually support `require` despite what their docs claim; trust the live connection error
-over the marketing page. Inspect:
+Postgres-only (goal.md ADR-013/020) — `get_booking_backend()` in `aurora/storage/bookings.py`
+hard-requires `POSTGRES_HOST`; there is no local-database fallback, in production or in tests.
+Idempotent via session + normalized-details keys, with atomicity from
+`INSERT ... ON CONFLICT (idempotency_key) DO NOTHING` at the database level (not an application
+lock) — needed the moment more than one process writes bookings (a worker pool, ADR-012).
+`POSTGRES_SSLMODE` defaults to `prefer` — hosted free-tier providers often don't actually support
+`require` despite what their docs claim; trust the live connection error over the marketing page.
+Inspect:
 
 ```bash
 psql "postgresql://$POSTGRES_USER:$POSTGRES_PASSWORD@$POSTGRES_HOST:$POSTGRES_PORT/$POSTGRES_DB?sslmode=prefer" \
@@ -403,8 +404,9 @@ the page's pre-login provider badge both need it).
   python -m aurora.ops.manage_users disable someone@example.com   # immediately invalidates their sessions
   python -m aurora.ops.manage_users enable someone@example.com
   ```
-- **Requires Postgres** — `aurora.server` refuses to start without `POSTGRES_HOST` set; unlike
-  bookings.py, there is no file-backed SQLite fallback for credentials/sessions in production.
+- **Requires Postgres** — `aurora.server` (and `aurora.worker`) refuses to start without
+  `POSTGRES_HOST` set; there is no local-database fallback for credentials/sessions or bookings
+  anywhere (goal.md ADR-021).
 - **Two independent rate limiters**, both in-memory/single-process (reset on restart/deploy;
   would need a shared store if ever scaled past one machine): `AUTH_RATE_LIMIT_PER_HOUR`
   (post-auth, per user — the cost-incurring routes) and `AUTH_LOGIN_RATE_LIMIT` (pre-auth, per

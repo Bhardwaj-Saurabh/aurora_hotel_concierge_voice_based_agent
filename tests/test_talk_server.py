@@ -8,6 +8,12 @@ import os
 import unittest
 from contextlib import contextmanager
 
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ModuleNotFoundError:
+    pass
+
 os.environ.setdefault("PROVIDER", "mock")
 
 from aurora.server import app as talk_server
@@ -110,6 +116,9 @@ class LiveServerAuthTests(unittest.TestCase):
     per request (never a client-side jar), preserving the raw-HTTP semantics
     these assertions were written against."""
 
+    TABLE_USERS = "auth_users_http_test"
+    TABLE_SESSIONS = "auth_sessions_http_test"
+
     @classmethod
     def setUpClass(cls):
         os.environ["PROVIDER"] = "mock"
@@ -118,7 +127,17 @@ class LiveServerAuthTests(unittest.TestCase):
         os.environ["AUTH_LOGIN_RATE_LIMIT"] = "1000"
 
         from aurora.storage import auth
-        auth.set_auth_backend_for_tests(auth.SqliteAuthBackend(":memory:"))
+        cls.backend = auth.PostgresAuthBackend(
+            host=os.environ["POSTGRES_HOST"],
+            port=int(os.getenv("POSTGRES_PORT", "5432")),
+            user=os.environ["POSTGRES_USER"],
+            password=os.environ["POSTGRES_PASSWORD"],
+            dbname=os.environ["POSTGRES_DB"],
+            users_table=cls.TABLE_USERS,
+            sessions_table=cls.TABLE_SESSIONS,
+        )
+        cls.backend.reset_for_tests()  # disposable table, clean slate
+        auth.set_auth_backend_for_tests(cls.backend)
 
         talk_server._reset_rate_limiters_for_tests()
         cls.app = talk_server.create_app()
@@ -127,6 +146,7 @@ class LiveServerAuthTests(unittest.TestCase):
     def tearDownClass(cls):
         from aurora.storage import auth
         auth.reset_auth_backend()
+        cls.backend.close()
 
     def _request(self, method, path, body=None, cookie=None):
         from fastapi.testclient import TestClient

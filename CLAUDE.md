@@ -74,7 +74,7 @@ One package, `src/aurora/`, split by responsibility (ADR-020):
 | `aurora.server` | FastAPI talk server: `app.py` (factory + main), `routes/` (auth/meta/turns), `deps.py` (auth gate + rate limiters), `sessions.py`, `replies.py`, `cookies.py`, `token_utils.py`, packaged `web/` client |
 | `aurora.worker` | room-native LiveKit agent worker (ADR-008) |
 | `aurora.voice` | local mic/text turn loop (Layer A) |
-| `aurora.storage` | `bookings.py` (ADR-007/013), `auth.py` (ADR-018) — dual SQLite/Postgres backends |
+| `aurora.storage` | `bookings.py` (ADR-007/013), `auth.py` (ADR-018) — Postgres-only, no local-database fallback (ADR-021) |
 | `aurora.telemetry` | `traces.py` (TurnTrace JSONL, privacy-by-default), `otel.py` (optional OTLP export) |
 | `aurora.config` | `env.py` (.env loader), `check.py` (fail-fast startup validation) |
 | `aurora.ops` | CLIs: `smoke`, `load_test`, `slo_report`, `scale_check`, `manage_users`, `promote_prompt`, `create_room`, `create_token` |
@@ -113,8 +113,9 @@ reservation" into policy search. Phrase lists and fuzzy-match terms live in the 
 - Transfer/hangup → control `action` returned to the loop (→ SIP REFER/BYE)
 
 Room availability/rates in `run_tool()` are a static mock catalog. Bookings themselves are real:
-[aurora/storage/bookings.py](src/aurora/storage/bookings.py) persists them (SQLite or Postgres,
-ADR-007/013) with a random, non-guessable confirmation ID (ADR-014) — never a sequential counter.
+[aurora/storage/bookings.py](src/aurora/storage/bookings.py) persists them to Postgres
+(ADR-007/013/020 — no local-database fallback) with a random, non-guessable confirmation ID
+(ADR-014) — never a sequential counter.
 
 **Language routing** ([aurora/core/router.py](src/aurora/core/router.py) + `set_language`
 handling in `agent.py`): `AgentRouter` holds validated session state. The LLM proposes a switch,

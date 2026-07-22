@@ -229,6 +229,12 @@ def main() -> None:
     )
     from aurora.config.check import require_valid_config
     require_valid_config()
+    if not os.getenv("POSTGRES_HOST", "").strip():
+        raise SystemExit(
+            "POSTGRES_HOST is not set. The worker needs Postgres (goal.md ADR-021) for "
+            "create_booking/lookup_booking — without it, a caller's booking attempt would "
+            "crash mid-call instead of failing fast at startup. Set POSTGRES_* in .env."
+        )
     _require_live_provider(os.getenv("PROVIDER", "mock").lower())
     cli.run_app(WorkerOptions(entrypoint_fnc=entrypoint))
 

@@ -1,20 +1,38 @@
 """
-smoke_test.py  -  full offline end-to-end check. No network, no key, no mic.
+smoke_test.py  -  full end-to-end check. No LLM/STT/TTS key, no mic.
 
 Forces PROVIDER=mock and drives scripted turns through the REAL Agent + adaptor,
 asserting that tools fire and control actions (transfer/hangup) surface. Run
 this in CI or before a workshop to confirm the loop is wired correctly.
+
+Needs a real Postgres connection (goal.md ADR-021 — bookings has no local
+fallback): the booking turn persists to a disposable table, never the real
+`bookings` table. Set POSTGRES_* in .env, or CI's `gates` job provides one.
 
     python -m aurora.ops.smoke
 """
 
 import os
 
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ModuleNotFoundError:
+    pass
+
 os.environ["PROVIDER"] = "mock"          # offline backend
 os.environ.setdefault("TTS_BACKEND", "print")
 
 from aurora.core.agent import Agent                   # noqa: E402
 from aurora.core.providers import make_provider        # noqa: E402
+from aurora.storage.bookings import (                 # noqa: E402
+    new_disposable_backend_for_offline_gates,
+    set_booking_backend_for_tests,
+)
+
+# Postgres-only (goal.md ADR-021) — a disposable table, never the real
+# 'bookings' table, so this gate never touches production data.
+set_booking_backend_for_tests(new_disposable_backend_for_offline_gates())
 
 
 def main() -> None:

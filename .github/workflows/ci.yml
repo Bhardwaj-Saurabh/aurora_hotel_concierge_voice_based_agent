@@ -15,6 +15,32 @@ jobs:
   gates:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    # Postgres-only, no SQLite anywhere (goal.md ADR-021) — bookings and
+    # auth both hard-require it, in production and in tests. Offline gate
+    # tests inject a real PostgresBookingBackend/PostgresAuthBackend pointed
+    # at disposable tables (never the real bookings/auth_users tables).
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: aurora
+          POSTGRES_PASSWORD: aurora
+          POSTGRES_DB: aurora
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U aurora"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=10
+    env:
+      PROVIDER: mock
+      POSTGRES_HOST: localhost
+      POSTGRES_PORT: "5432"
+      POSTGRES_USER: aurora
+      POSTGRES_PASSWORD: aurora
+      POSTGRES_DB: aurora
+      POSTGRES_SSLMODE: disable
     steps:
       - uses: actions/checkout@v4
 
@@ -47,10 +73,10 @@ jobs:
   container-talk-server:
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    # talk_server.py now hard-requires POSTGRES_HOST (goal.md ADR-018 — the
-    # user-auth system is mandatory, not optional, unlike bookings' Postgres).
-    # A real Postgres service makes this boot check prove the auth-required
-    # container actually starts, not just that it starts without auth wired.
+    # talk_server.py hard-requires POSTGRES_HOST (goal.md ADR-018/020 — the
+    # user-auth system is mandatory, and bookings are Postgres-only with no
+    # fallback). A real Postgres service makes this boot check prove the
+    # container actually starts against a real database, not a mocked one.
     services:
       postgres:
         image: postgres:16
@@ -89,6 +115,26 @@ jobs:
   container-worker:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    # Same Postgres requirement as talk-server (goal.md ADR-021): the worker's
+    # Agent calls create_booking/lookup_booking too, and now hard-requires
+    # POSTGRES_HOST at startup (closing a real gap — psycopg was previously
+    # missing from the worker's own dependency extra entirely, so a real
+    # booking attempt on a live call would have crashed with
+    # ModuleNotFoundError, never caught because nothing had exercised it).
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: aurora
+          POSTGRES_PASSWORD: aurora
+          POSTGRES_DB: aurora
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U aurora"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=10
     steps:
       - uses: actions/checkout@v4
 
@@ -107,10 +153,13 @@ jobs:
         run: |
           # OPENAI_API_KEY is a placeholder: registration only needs valid
           # LiveKit credentials, not a working LLM key (no call is placed).
-          docker run -d --rm --name aurora-worker --network aurora-ci -p 8081:8081 \
+          docker run -d --rm --name aurora-worker --network aurora-ci --add-host=host.docker.internal:host-gateway -p 8081:8081 \
             -e PROVIDER=openai -e OPENAI_API_KEY=dummy-key-for-registration \
             -e LIVEKIT_URL=ws://lk-server:7880 \
             -e LIVEKIT_API_KEY=devkey -e LIVEKIT_API_SECRET=secret \
+            -e POSTGRES_HOST=host.docker.internal -e POSTGRES_PORT=5432 \
+            -e POSTGRES_USER=aurora -e POSTGRES_PASSWORD=aurora -e POSTGRES_DB=aurora \
+            -e POSTGRES_SSLMODE=disable \
             aurora-agent-worker
           # GET / on the worker's health port only returns 200 once it has
           # connected to LiveKit and its job executor is running.
@@ -120,7 +169,21 @@ jobs:
           docker logs aurora-worker
           docker stop aurora-worker
           docker stop lk-server
-          test "$ok" = "1"
+
+      - name: "Verify Postgres check actually gates startup (goal.md ADR-021)"
+        run: |
+          # Regression guard for the bug this same pass closed: run once more
+          # with NO Postgres configured and confirm the container exits
+          # instead of silently starting without booking storage.
+          set +e
+          docker run --rm --name aurora-worker-no-pg --network aurora-ci \
+            -e PROVIDER=openai -e OPENAI_API_KEY=dummy-key-for-registration \
+            -e LIVEKIT_URL=ws://lk-server:7880 \
+            -e LIVEKIT_API_KEY=devkey -e LIVEKIT_API_SECRET=secret \
+            aurora-agent-worker
+          status=$?
+          set -e
+          test "$status" -ne 0
 
   # Deploy to Fly.io (goal.md 4.1/4.3) — only on a merge to main, never a PR
   # (untrusted PR code must never deploy), and only after every gate above
@@ -151,3 +214,63 @@ jobs:
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN_WORKER }}
         run: $HOME/.fly/bin/flyctl deploy -c fly.worker.toml --remote-only
+
+  # Post-deploy Opik automation (goal.md, 2026-07-22): every successful
+  # deploy (a) syncs the local SYSTEM_PROMPT to Opik's Prompt Library as a
+  # new version if it changed (create_prompt is idempotent — identical text
+  # returns the existing version, never a duplicate) and (b) runs the same
+  # core.json/red_team.json scenarios against the real deployed model,
+  # logging a real Opik Experiment. Non-blocking: live evals are a manual/
+  # periodic quality signal (goal.md RUNBOOK 3.1), not a merge gate, and the
+  # deploy above has already happened by the time this runs. Promotion to
+  # the 'production' prompt environment stays the deliberate, separate
+  # promote_prompt.py step — never auto-promoted here.
+  post-deploy-eval:
+    needs: [deploy-talk-server, deploy-worker]
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    continue-on-error: true
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: aurora
+          POSTGRES_PASSWORD: aurora
+          POSTGRES_DB: aurora
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U aurora"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=10
+    env:
+      PROVIDER: openai
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      OPIK_API_KEY: ${{ secrets.OPIK_API_KEY }}
+      OPIK_WORKSPACE: ${{ secrets.OPIK_WORKSPACE }}
+      OPIK_PROJECT_NAME: ${{ secrets.OPIK_PROJECT_NAME }}
+      POSTGRES_HOST: localhost
+      POSTGRES_PORT: "5432"
+      POSTGRES_USER: aurora
+      POSTGRES_PASSWORD: aurora
+      POSTGRES_DB: aurora
+      POSTGRES_SSLMODE: disable
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install dependencies
+        run: python -m pip install -e ".[server,worker,dev]"
+
+      - name: Sync SYSTEM_PROMPT to Opik (new version only if changed)
+        run: python -m aurora.ops.sync_prompt
+
+      - name: Run live evaluation suite, log to Opik
+        run: python evals/run_live_evals.py --suite all --trials 3

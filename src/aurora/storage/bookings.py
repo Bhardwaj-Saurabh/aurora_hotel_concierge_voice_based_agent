@@ -1,8 +1,8 @@
 """
-bookings.py  -  durable, idempotent booking storage (goal.md ADR-007/013/014).
+bookings.py  -  durable, idempotent booking storage (goal.md ADR-007/013/014/021).
 
-BookingBackend semantics (both implementations below satisfy the same
-contract, proven by the shared test mixin in test_features.py):
+BookingBackend semantics, proven by the shared contract-test mixin in
+test_features.py:
     - A retried create_booking with identical details returns the SAME confirmation
       (created=False) instead of double-booking. Idempotency key = sha256 of the
       session plus normalized booking details.
@@ -14,14 +14,13 @@ contract, proven by the shared test mixin in test_features.py):
     - Validation errors raise BookingValidationError with a caller-friendly,
       speakable message.
 
-Two backends:
-    - SqliteBookingBackend (default): in-memory for tests, or a file via
-      BOOKINGS_DB for single-instance durability.
-    - PostgresBookingBackend (ADR-013): used when POSTGRES_HOST is set. A
-      single SQLite file breaks idempotency the moment more than one process
-      (a pool of workers, ADR-012) writes bookings — each replica would get
-      its own file. Postgres's `INSERT ... ON CONFLICT ... DO NOTHING` makes
-      the idempotency check atomic *across* processes, not just within one.
+Postgres-only (goal.md ADR-021, 2026-07-22 — supersedes ADR-007/013's dual
+SQLite/Postgres design): `get_booking_backend()` hard-requires POSTGRES_HOST,
+exactly like auth.py's get_auth_backend() already did. There is no
+file-backed or in-memory fallback in production — a misconfigured deploy
+must fail loudly, not silently persist bookings to a throwaway local store.
+Tests inject a real PostgresBookingBackend pointed at a disposable table via
+set_booking_backend_for_tests(), the same seam auth.py already used.
 """
 
 from __future__ import annotations
@@ -30,7 +29,6 @@ import hashlib
 import os
 import re
 import secrets
-import sqlite3
 import threading
 from dataclasses import dataclass
 from datetime import datetime
@@ -169,130 +167,10 @@ def _idempotency_key(
     return hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()
 
 
-class SqliteBookingBackend:
-    """SQLite implementation of the booking store. Single-instance only — see
-    PostgresBookingBackend for a pool of processes/replicas (ADR-013)."""
-
-    def __init__(self, path: str = ":memory:", id_generator=_generate_confirmation_id):
-        self._lock = threading.Lock()
-        self._id_generator = id_generator
-        self._conn = sqlite3.connect(path, check_same_thread=False)
-        self._conn.execute(
-            "CREATE TABLE IF NOT EXISTS bookings ("
-            "  id INTEGER PRIMARY KEY AUTOINCREMENT,"
-            "  confirmation_id TEXT UNIQUE NOT NULL,"
-            "  idempotency_key TEXT UNIQUE NOT NULL,"
-            "  session_id TEXT NOT NULL,"
-            "  check_in TEXT NOT NULL,"
-            "  check_out TEXT NOT NULL,"
-            "  guests INTEGER NOT NULL,"
-            "  room_type TEXT NOT NULL,"
-            "  guest_name TEXT NOT NULL,"
-            "  contact TEXT NOT NULL,"
-            "  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP"
-            ")"
-        )
-        self._conn.commit()
-
-    def create_booking(
-        self,
-        *,
-        session_id: str,
-        check_in: str,
-        check_out: str,
-        guests: int,
-        room_type: str | None,
-        guest_name: str,
-        contact: str,
-    ) -> BookingRecord:
-        room_key, details = _validate_and_normalize(
-            check_in=check_in, check_out=check_out, guests=guests,
-            room_type=room_type, guest_name=guest_name, contact=contact,
-        )
-        key = _idempotency_key(
-            session_id, check_in, check_out, details["guests"], room_key,
-            guest_name, contact,
-        )
-        with self._lock:
-            row = self._conn.execute(
-                "SELECT confirmation_id FROM bookings WHERE idempotency_key = ?",
-                (key,),
-            ).fetchone()
-            if row:
-                return BookingRecord(confirmation_id=row[0], created=False, **details)
-            for _ in range(_MAX_CONFIRMATION_RETRIES):
-                confirmation = self._id_generator()
-                try:
-                    self._conn.execute(
-                        "INSERT INTO bookings (confirmation_id, idempotency_key,"
-                        " session_id, check_in, check_out, guests, room_type,"
-                        " guest_name, contact) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                        (
-                            confirmation, key, session_id,
-                            details["check_in"], details["check_out"], details["guests"],
-                            details["room_type"], details["guest_name"], details["contact"],
-                        ),
-                    )
-                    self._conn.commit()
-                    break
-                except sqlite3.IntegrityError:
-                    continue  # confirmation_id collision (idempotency_key already checked above)
-            else:
-                raise RuntimeError(
-                    "Could not generate a unique confirmation ID after "
-                    f"{_MAX_CONFIRMATION_RETRIES} attempts."
-                )
-        return BookingRecord(confirmation_id=confirmation, created=True, **details)
-
-    def find_booking(
-        self,
-        *,
-        confirmation_id: str | None = None,
-        guest_name: str | None = None,
-        contact: str | None = None,
-    ) -> dict | None:
-        """Look up an existing reservation (goal.md, lookup_booking tool).
-
-        A confirmation code is sufficient on its own (it is random and
-        non-guessable, ADR-014 — the same trust model as an order number).
-        Without one, BOTH guest_name and contact must match: a bare name is
-        never enough to disclose someone else's booking (goal.md's
-        privacy.other_guest red-team case)."""
-        columns = "confirmation_id, check_in, check_out, guests, room_type, guest_name, contact"
-        if confirmation_id:
-            normalized = confirmation_id.strip().upper()
-            if not normalized.startswith("AH-"):
-                normalized = f"AH-{normalized}"
-            row = self._conn.execute(
-                f"SELECT {columns} FROM bookings WHERE confirmation_id = ?",
-                (normalized,),
-            ).fetchone()
-        elif (guest_name or "").strip() and (contact or "").strip():
-            row = self._conn.execute(
-                f"SELECT {columns} FROM bookings"
-                " WHERE lower(guest_name) = lower(?) AND lower(contact) = lower(?)"
-                " ORDER BY id DESC LIMIT 1",
-                (guest_name.strip(), contact.strip()),
-            ).fetchone()
-        else:
-            return None
-        if not row:
-            return None
-        return dict(zip(
-            ("confirmation_id", "check_in", "check_out", "guests", "room_type",
-             "guest_name", "contact"),
-            row,
-        ))
-
-    def close(self) -> None:
-        self._conn.close()
-
-
 class PostgresBookingBackend:
     """Postgres implementation (ADR-013): idempotency enforced by the database
     itself via a UNIQUE constraint + INSERT ... ON CONFLICT, so two different
-    processes racing on the same booking can never both create a row — unlike
-    SqliteBookingBackend's threading.Lock, which only protects one process.
+    processes racing on the same booking can never both create a row.
     """
 
     def __init__(
@@ -479,7 +357,13 @@ class PostgresBookingBackend:
         guest_name: str | None = None,
         contact: str | None = None,
     ) -> dict | None:
-        """Same contract as SqliteBookingBackend.find_booking — see there."""
+        """Look up an existing reservation (goal.md, lookup_booking tool).
+
+        A confirmation code is sufficient on its own (it is random and
+        non-guessable, ADR-014 — the same trust model as an order number).
+        Without one, BOTH guest_name and contact must match: a bare name is
+        never enough to disclose someone else's booking (goal.md's
+        privacy.other_guest red-team case)."""
         from psycopg import sql
 
         columns = sql.SQL(", ").join(
@@ -536,23 +420,27 @@ _backend_lock = threading.Lock()
 
 
 def get_booking_backend():
-    """Postgres when POSTGRES_HOST is set (ADR-013); otherwise SQLite/in-memory."""
+    """Postgres in every real run; a test-injected backend only when one has
+    been set via set_booking_backend_for_tests (goal.md ADR-021 — no
+    file-backed or in-memory fallback in production, mirroring
+    auth.py's get_auth_backend())."""
     global _backend
     with _backend_lock:
         if _backend is None:
             postgres_host = os.getenv("POSTGRES_HOST", "").strip()
-            if postgres_host:
-                _backend = PostgresBookingBackend(
-                    host=postgres_host,
-                    port=int(os.getenv("POSTGRES_PORT", "5432") or 5432),
-                    user=os.getenv("POSTGRES_USER", ""),
-                    password=os.getenv("POSTGRES_PASSWORD", ""),
-                    dbname=os.getenv("POSTGRES_DB", ""),
-                    sslmode=os.getenv("POSTGRES_SSLMODE", "").strip() or "prefer",
+            if not postgres_host:
+                raise RuntimeError(
+                    "POSTGRES_HOST is not set. Bookings require Postgres "
+                    "(goal.md ADR-021) — there is no local database fallback."
                 )
-            else:
-                path = os.getenv("BOOKINGS_DB", "").strip() or ":memory:"
-                _backend = SqliteBookingBackend(path)
+            _backend = PostgresBookingBackend(
+                host=postgres_host,
+                port=int(os.getenv("POSTGRES_PORT", "5432") or 5432),
+                user=os.getenv("POSTGRES_USER", ""),
+                password=os.getenv("POSTGRES_PASSWORD", ""),
+                dbname=os.getenv("POSTGRES_DB", ""),
+                sslmode=os.getenv("POSTGRES_SSLMODE", "").strip() or "prefer",
+            )
         return _backend
 
 
@@ -561,3 +449,32 @@ def reset_booking_backend() -> None:
     global _backend
     with _backend_lock:
         _backend = None
+
+
+def set_booking_backend_for_tests(backend) -> None:
+    """Test-only: inject a backend directly (a PostgresBookingBackend pointed
+    at a disposable table), bypassing get_booking_backend()'s POSTGRES_HOST
+    construction so offline gates never touch the real bookings table.
+    Mirrors auth.py's set_auth_backend_for_tests."""
+    global _backend
+    with _backend_lock:
+        _backend = backend
+
+
+def new_disposable_backend_for_offline_gates(table_name: str = "bookings_gate_test"):
+    """Build a fresh, disposable-table PostgresBookingBackend for the offline
+    gates (smoke test, evals) — goal.md ADR-021: Postgres-only, so these
+    scripts need a real backend, but never the production `bookings` table.
+    Requires POSTGRES_* in the environment; pair with
+    set_booking_backend_for_tests(new_disposable_backend_for_offline_gates())."""
+    backend = PostgresBookingBackend(
+        host=os.environ["POSTGRES_HOST"],
+        port=int(os.getenv("POSTGRES_PORT", "5432")),
+        user=os.environ["POSTGRES_USER"],
+        password=os.environ["POSTGRES_PASSWORD"],
+        dbname=os.environ["POSTGRES_DB"],
+        sslmode=os.getenv("POSTGRES_SSLMODE", "").strip() or "prefer",
+        table_name=table_name,
+    )
+    backend.reset_for_tests()
+    return backend

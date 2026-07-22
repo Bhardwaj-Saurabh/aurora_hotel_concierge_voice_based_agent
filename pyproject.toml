@@ -39,6 +39,12 @@ worker = [
     "livekit-api",
     "livekit-agents[openai,silero]~=1.6",
     "opik",
+    # goal.md ADR-020: create_booking/lookup_booking are Postgres-only, and
+    # the worker's Agent calls them the same as the HTTP bridge does — this
+    # was missing (never caught because nothing had tested a real booking
+    # through the worker), so every booking attempt on a real call would
+    # have crashed with ModuleNotFoundError.
+    "psycopg[binary]>=3.1",
 ]
 audio = [
     "sounddevice",

@@ -7,13 +7,26 @@ import json
 import os
 from pathlib import Path
 
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ModuleNotFoundError:
+    pass
+
 os.environ["PROVIDER"] = "mock"
 os.environ.setdefault("TTS_BACKEND", "print")
 
 from aurora.core.agent import Agent  # noqa: E402
-from aurora.storage.bookings import reset_booking_backend  # noqa: E402
+from aurora.storage.bookings import (  # noqa: E402
+    new_disposable_backend_for_offline_gates,
+    set_booking_backend_for_tests,
+)
 from aurora.core.providers import make_provider  # noqa: E402
 from aurora.telemetry.traces import TurnTrace  # noqa: E402
+
+# Postgres-only (goal.md ADR-021) — a disposable table, never the real
+# 'bookings' table, so this gate never touches production data.
+set_booking_backend_for_tests(new_disposable_backend_for_offline_gates())
 
 
 def _tool_names(trace: dict) -> list[str]:
@@ -51,8 +64,13 @@ def _check(expect: dict, reply: str, action: str | None, trace: dict) -> list[st
 def run_case(case: dict, verbose: bool = False, provider_name: str = "mock") -> tuple[bool, list[str]]:
     """`provider_name` defaults to "mock" (this gate's substrate, ADR-004);
     evals/run_live_evals.py passes a real backend to run the same scenarios
-    and grading against the actual configured LLM."""
-    reset_booking_backend()  # hermetic cases: confirmation sequence restarts per scenario
+    and grading against the actual configured LLM.
+
+    Does NOT reset the booking backend between cases (goal.md ADR-021): each
+    case's session_id ("eval-<case id>") is unique, so idempotency keys can
+    never collide across scenarios regardless of shared table state — and
+    resetting would rebuild a default-table backend, undoing the disposable
+    Postgres table this script's caller injected once at startup."""
     agent = Agent(make_provider(provider_name))
     failures: list[str] = []
     for index, turn in enumerate(case["turns"], start=1):

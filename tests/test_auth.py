@@ -1,10 +1,9 @@
-"""Tests for the user-auth backend (goal.md ADR-018).
+"""Tests for the user-auth backend (goal.md ADR-018/020).
 
 Closes ADR-015's documented, previously-accepted gap: talk-server's /token
-and /agent endpoints had no caller authentication. SqliteAuthBackend exists
-for tests only (goal.md ADR-018 deliberately does NOT extend bookings.py's
-file-durability affordance to credentials/sessions) — PostgresAuthBackend is
-the only backend ever used outside a test run.
+and /agent endpoints had no caller authentication. Postgres-only, in
+production and in tests (ADR-021) — PostgresAuthBackend, pointed at a
+disposable table for tests, is the only backend that ever exists.
 """
 
 from __future__ import annotations
@@ -110,19 +109,10 @@ class _AuthBackendContractTests:
         )
 
 
-class SqliteAuthBackendTests(_AuthBackendContractTests, unittest.TestCase):
-    def _backend(self):
-        from aurora.storage.auth import SqliteAuthBackend
-        return SqliteAuthBackend(":memory:")
-
-
-def _postgres_env_configured() -> bool:
-    return bool(os.getenv("POSTGRES_HOST", "").strip())
-
-
-@unittest.skipUnless(_postgres_env_configured(), "POSTGRES_HOST not configured; skipping live Postgres tests")
 class PostgresAuthBackendTests(_AuthBackendContractTests, unittest.TestCase):
-    """Runs for real against the configured Postgres instance (goal.md ADR-018).
+    """Runs for real against the configured Postgres instance (goal.md
+    ADR-018/020 — Postgres-only, no SQLite anywhere, so this always runs;
+    CI's gates job provides a real postgres:16 service).
 
     Uses disposable, uniquely-named tables — never the production auth_users/
     auth_sessions tables — dropped and recreated per test.
@@ -166,12 +156,25 @@ class TimingSafeLoginTests(unittest.TestCase):
     Not a wall-clock timing assertion (too flaky in CI); instead proves the
     structural guarantee: an unknown email still runs a real hash verify."""
 
+    TABLE_USERS = "auth_users_timing_test"
+    TABLE_SESSIONS = "auth_sessions_timing_test"
+
     def test_unknown_email_still_runs_a_hash_verification(self):
         from unittest.mock import patch
         from aurora.storage import auth
-        from aurora.storage.auth import SqliteAuthBackend
+        from aurora.storage.auth import PostgresAuthBackend
 
-        backend = SqliteAuthBackend(":memory:")
+        backend = PostgresAuthBackend(
+            host=os.environ["POSTGRES_HOST"],
+            port=int(os.getenv("POSTGRES_PORT", "5432")),
+            user=os.environ["POSTGRES_USER"],
+            password=os.environ["POSTGRES_PASSWORD"],
+            dbname=os.environ["POSTGRES_DB"],
+            users_table=self.TABLE_USERS,
+            sessions_table=self.TABLE_SESSIONS,
+        )
+        self.addCleanup(backend.close)
+        backend.reset_for_tests()
         backend.register_user("guest@example.com", "correct horse battery")
 
         with patch.object(auth.PasswordHasher, "verify", wraps=auth.PasswordHasher().verify) as spy:

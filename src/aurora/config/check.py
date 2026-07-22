@@ -12,7 +12,6 @@ before serving the first turn, and it runs standalone:
 from __future__ import annotations
 
 import os
-import sqlite3
 from pathlib import Path
 from typing import Mapping
 
@@ -123,14 +122,6 @@ def validate_config(env: Mapping[str, str] | None = None) -> list[str]:
             problems.append(
                 f"KNOWLEDGE_SNAPSHOT={pin!r} does not exist (available: {available})."
             )
-
-    bookings = _value(env, "BOOKINGS_DB")
-    if bookings and bookings != ":memory:":
-        try:
-            Path(bookings).expanduser().parent.mkdir(parents=True, exist_ok=True)
-            sqlite3.connect(Path(bookings).expanduser().as_posix()).close()
-        except (OSError, sqlite3.OperationalError) as exc:
-            problems.append(f"BOOKINGS_DB={bookings!r} cannot be opened: {exc}")
 
     postgres_host = _value(env, "POSTGRES_HOST")
     if postgres_host:
