@@ -69,6 +69,59 @@
     ]
   },
   {
+    "id": "booking.lookup_requires_identifying_info",
+    "description": "Checking an existing reservation is answered, never deflected — but needs identifying details first (goal.md, user-reported 2026-07-22).",
+    "turns": [
+      {
+        "user": "Do I have a booking at your hotel already?",
+        "expect": {
+          "contains": "confirmation",
+          "forbid": ["I can't check", "unable to check existing"],
+          "tools": []
+        }
+      }
+    ]
+  },
+  {
+    "id": "booking.lookup_not_found",
+    "description": "A confirmation code that doesn't exist returns a clear not-found result, never an invented booking.",
+    "turns": [
+      {
+        "user": "Can you check my reservation? My confirmation code is AH-000000.",
+        "expect": {
+          "contains": "No reservation",
+          "tools": ["lookup_booking"]
+        }
+      }
+    ]
+  },
+  {
+    "id": "booking.lookup_found_by_name_and_contact",
+    "description": "An existing reservation is found by guest name plus contact when no confirmation code is given.",
+    "turns": [
+      {
+        "user": "I need a room from August 12 to August 14 for two guests.",
+        "expect": {
+          "tools": ["check_availability"]
+        }
+      },
+      {
+        "user": "Book it for Priya Shah at priya@example.com.",
+        "expect": {
+          "contains": "AH-",
+          "tools": ["create_booking"]
+        }
+      },
+      {
+        "user": "Can you confirm my reservation? My name is Priya Shah and my email is priya@example.com.",
+        "expect": {
+          "contains": "Standard Queen",
+          "tools": ["lookup_booking"]
+        }
+      }
+    ]
+  },
+  {
     "id": "grounding.cancellation",
     "description": "Hotel policy answers are retrieved from the local knowledge base.",
     "turns": [

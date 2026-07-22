@@ -331,6 +331,30 @@ class MockProvider:
             if spanish:
                 return _mk_text("No puedo revelar datos de otro huésped. Solo puedo ayudar con su propia reserva de hotel.")
             return _mk_text("I cannot disclose another guest's information. I can only help with your own hotel reservation.")
+        if any(phrase in text for phrase in (
+            "do i have a booking", "do i have a reservation", "check my reservation",
+            "check my booking", "look up my booking", "look up my reservation",
+            "find my reservation", "find my booking", "confirm my reservation",
+            "confirm my booking", "existing reservation", "existing booking",
+            "already have a booking", "already have a reservation",
+        )):
+            code_match = re.search(r"AH-[A-Z0-9]{4,8}", text, re.IGNORECASE)
+            if code_match:
+                return _mk_tool("lookup_booking", {"confirmation_id": code_match.group(0).upper()})
+            email_match = re.search(r"[\w.+-]+@[\w-]+\.[\w.-]+", text)
+            if email_match:
+                # rstrip: a period right after the TLD is sentence punctuation
+                # ("...priya@example.com."), not part of the domain.
+                contact = email_match.group(0).rstrip(".")
+                # Mock is a scripted stand-in, not a name parser (same
+                # simplification create_booking already makes below).
+                return _mk_tool("lookup_booking", {
+                    "guest_name": "Priya Shah", "contact": contact,
+                })
+            return _mk_text(
+                "Sure — do you have your confirmation code, or the name and contact "
+                "used for the booking?"
+            )
         if tokens & {"human", "person", "representative", "agent", "operator", "persona", "recepción"}:
             return _mk_tool("transfer_to_human", {})
         if any(w in text for w in ("change", "cancel", "modify", "front desk")):

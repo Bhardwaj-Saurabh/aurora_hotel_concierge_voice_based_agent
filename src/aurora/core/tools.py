@@ -106,6 +106,35 @@ TOOLS = [
     {
         "type": "function",
         "function": {
+            "name": "lookup_booking",
+            "description": "Look up an existing reservation. Use when the caller asks to check, "
+                           "confirm, or find a booking they already made — never invent a booking's "
+                           "details from memory. Prefer the confirmation code alone; if the caller "
+                           "doesn't have it, use both the guest name and the contact (phone or "
+                           "email) on the reservation together, never a name by itself.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "confirmation_id": {
+                        "type": "string",
+                        "description": "The booking confirmation code, e.g. AH-4827, if the caller has it.",
+                    },
+                    "guest_name": {
+                        "type": "string",
+                        "description": "Guest name on the reservation, only used together with contact.",
+                    },
+                    "contact": {
+                        "type": "string",
+                        "description": "Phone number or email on the reservation, only used together with guest_name.",
+                    },
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "search_hotel_knowledge",
             "description": "Retrieve grounded Aurora Hotel policies, amenities, and operating details. "
                            "Always use for cancellation rules, check-in or check-out times, parking, "
@@ -301,6 +330,30 @@ def run_tool(name: str, args: dict, session_id: str = "") -> dict:
                       f"{record.confirmation_id} for {record.guest_name} in a "
                       f"{room['name']} from {record.check_in} to {record.check_out}. "
                       "No duplicate booking was created.",
+        }
+    if name == "lookup_booking":
+        found = get_booking_backend().find_booking(
+            confirmation_id=args.get("confirmation_id"),
+            guest_name=args.get("guest_name"),
+            contact=args.get("contact"),
+        )
+        if found is None:
+            if args.get("confirmation_id") or (args.get("guest_name") and args.get("contact")):
+                return {
+                    "result": "No reservation was found matching those details. Offer to make a "
+                              "new booking, or transfer to the front desk if the caller believes "
+                              "this is an error.",
+                }
+            return {
+                "result": "Ask the caller for the confirmation code, or the guest name and the "
+                          "contact (phone or email) used for the booking, before looking it up.",
+            }
+        room = _ROOMS[found["room_type"]]
+        return {
+            "result": f"Found a reservation. Confirmation {found['confirmation_id']} for "
+                      f"{found['guest_name']} in a {room['name']} from "
+                      f"{found['check_in']} to {found['check_out']} for "
+                      f"{found['guests']} guest(s).",
         }
     if name == "get_room_service_hours":
         # Breakfast window matches hotel_policies.md#Breakfast (one truth, two doors).

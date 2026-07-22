@@ -954,6 +954,46 @@ class _BookingBackendContractTests:
                                                         check_out="the Thursday after"))
         self.assertTrue(record.created)
 
+    def test_find_booking_by_confirmation_id(self):
+        backend = self._backend()
+        created = backend.create_booking(**self._details())
+        found = backend.find_booking(confirmation_id=created.confirmation_id)
+        self.assertIsNotNone(found)
+        self.assertEqual(found["confirmation_id"], created.confirmation_id)
+        self.assertEqual(found["guest_name"], "Priya Shah")
+        self.assertEqual(found["room_type"], "standard")
+
+    def test_find_booking_by_confirmation_id_is_case_insensitive(self):
+        backend = self._backend()
+        created = backend.create_booking(**self._details())
+        found = backend.find_booking(confirmation_id=created.confirmation_id.lower())
+        self.assertIsNotNone(found)
+        self.assertEqual(found["confirmation_id"], created.confirmation_id)
+
+    def test_find_booking_by_name_and_contact(self):
+        backend = self._backend()
+        backend.create_booking(**self._details())
+        found = backend.find_booking(guest_name="Priya Shah", contact="priya@example.com")
+        self.assertIsNotNone(found)
+        self.assertEqual(found["contact"], "priya@example.com")
+
+    def test_find_booking_name_alone_is_not_enough(self):
+        # Mirrors goal.md's privacy.other_guest red-team case: a bare name
+        # must never be enough to disclose someone else's booking details.
+        backend = self._backend()
+        backend.create_booking(**self._details())
+        self.assertIsNone(backend.find_booking(guest_name="Priya Shah"))
+
+    def test_find_booking_not_found_returns_none(self):
+        backend = self._backend()
+        backend.create_booking(**self._details())
+        self.assertIsNone(backend.find_booking(confirmation_id="AH-000000"))
+        self.assertIsNone(backend.find_booking(guest_name="Priya Shah", contact="wrong@example.com"))
+
+    def test_find_booking_with_no_identifying_info_returns_none(self):
+        backend = self._backend()
+        self.assertIsNone(backend.find_booking())
+
 
 class SqliteBookingBackendTests(_BookingBackendContractTests, unittest.TestCase):
     def _backend(self):

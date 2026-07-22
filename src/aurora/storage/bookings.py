@@ -244,6 +244,46 @@ class SqliteBookingBackend:
                 )
         return BookingRecord(confirmation_id=confirmation, created=True, **details)
 
+    def find_booking(
+        self,
+        *,
+        confirmation_id: str | None = None,
+        guest_name: str | None = None,
+        contact: str | None = None,
+    ) -> dict | None:
+        """Look up an existing reservation (goal.md, lookup_booking tool).
+
+        A confirmation code is sufficient on its own (it is random and
+        non-guessable, ADR-014 — the same trust model as an order number).
+        Without one, BOTH guest_name and contact must match: a bare name is
+        never enough to disclose someone else's booking (goal.md's
+        privacy.other_guest red-team case)."""
+        columns = "confirmation_id, check_in, check_out, guests, room_type, guest_name, contact"
+        if confirmation_id:
+            normalized = confirmation_id.strip().upper()
+            if not normalized.startswith("AH-"):
+                normalized = f"AH-{normalized}"
+            row = self._conn.execute(
+                f"SELECT {columns} FROM bookings WHERE confirmation_id = ?",
+                (normalized,),
+            ).fetchone()
+        elif (guest_name or "").strip() and (contact or "").strip():
+            row = self._conn.execute(
+                f"SELECT {columns} FROM bookings"
+                " WHERE lower(guest_name) = lower(?) AND lower(contact) = lower(?)"
+                " ORDER BY id DESC LIMIT 1",
+                (guest_name.strip(), contact.strip()),
+            ).fetchone()
+        else:
+            return None
+        if not row:
+            return None
+        return dict(zip(
+            ("confirmation_id", "check_in", "check_out", "guests", "room_type",
+             "guest_name", "contact"),
+            row,
+        ))
+
     def close(self) -> None:
         self._conn.close()
 
@@ -374,6 +414,49 @@ class PostgresBookingBackend:
                     f"{_MAX_CONFIRMATION_RETRIES} attempts."
                 )
         return BookingRecord(confirmation_id=confirmation, created=created, **details)
+
+    def find_booking(
+        self,
+        *,
+        confirmation_id: str | None = None,
+        guest_name: str | None = None,
+        contact: str | None = None,
+    ) -> dict | None:
+        """Same contract as SqliteBookingBackend.find_booking — see there."""
+        from psycopg import sql
+
+        columns = sql.SQL(", ").join(
+            sql.Identifier(name) for name in
+            ("confirmation_id", "check_in", "check_out", "guests", "room_type",
+             "guest_name", "contact")
+        )
+        if confirmation_id:
+            normalized = confirmation_id.strip().upper()
+            if not normalized.startswith("AH-"):
+                normalized = f"AH-{normalized}"
+            row = self._conn.execute(
+                sql.SQL("SELECT {columns} FROM {table} WHERE confirmation_id = %s")
+                .format(columns=columns, table=sql.Identifier(self._table)),
+                (normalized,),
+            ).fetchone()
+        elif (guest_name or "").strip() and (contact or "").strip():
+            row = self._conn.execute(
+                sql.SQL(
+                    "SELECT {columns} FROM {table}"
+                    " WHERE lower(guest_name) = lower(%s) AND lower(contact) = lower(%s)"
+                    " ORDER BY id DESC LIMIT 1"
+                ).format(columns=columns, table=sql.Identifier(self._table)),
+                (guest_name.strip(), contact.strip()),
+            ).fetchone()
+        else:
+            return None
+        if not row:
+            return None
+        return dict(zip(
+            ("confirmation_id", "check_in", "check_out", "guests", "room_type",
+             "guest_name", "contact"),
+            row,
+        ))
 
     def reset_for_tests(self) -> None:
         """Test-only: drop and recreate the table for a clean-slate contract
