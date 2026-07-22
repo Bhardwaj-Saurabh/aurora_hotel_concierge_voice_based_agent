@@ -86,6 +86,27 @@ python evals/run_evals.py --suite red-team --verbose
 knowledge, MockProvider — starts by writing the eval that pins the new behavior, proving it
 fails, then implementing. Never weaken an eval to make it pass.
 
+### 3.1 Live evaluation (real model, logged to Opik) — goal.md ADR-004, 2026-07-22
+
+The four gates above prove grading logic and mock parity; they cannot tell you whether the real
+model actually calls the expected tools. `evals/run_live_evals.py` runs the **same**
+`core.json`/`red_team.json` scenarios against the real configured provider (`PROVIDER=openai` or
+`groq` in `.env` — refuses to run on mock) and logs a proper Experiment to Opik:
+
+```bash
+python evals/run_live_evals.py --suite all --trials 3          # logs to Opik (needs OPIK_API_KEY)
+python evals/run_live_evals.py --suite red-team --trials 5 --local-only   # no Opik, just a report
+```
+
+Booking-safe by construction: forces `BOOKINGS_DB=:memory:` and drops `POSTGRES_HOST` before
+anything runs, so a completed booking flow never writes into the real bookings table. Costs real
+API calls — this is a manual/periodic check, not a CI gate. `--trials` matters: temperature-driven
+misclassification is intermittent (one real bug was only 3/8 at the old temperature, invisible to
+a single manual test). Read failures individually before treating a low `scenario_passed` score as
+a regression — the grading is calibrated to `MockProvider`'s exact canned wording/tool sequences,
+so a real model saying something equally correct differently, or correctly asking for missing
+details before calling a tool, shows up as a "failure" that isn't actually a bug.
+
 ---
 
 ## 4. Talking to Aurora (CLI)

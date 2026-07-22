@@ -81,5 +81,17 @@
         }
       }
     ]
+  },
+  {
+    "id": "grounding.indirect_stay_request_not_off_topic",
+    "description": "An indirect, non-English lodging phrase (goal.md live debugging pass, 2026-07-22 — measured 3/8 off-topic misfires on the real model at temperature 0.3, 0/8 at 0.15) must not be misclassified as off-topic.",
+    "turns": [
+      {
+        "user": "Necesito un lugar para quedarme este fin de semana para dos personas.",
+        "expect": {
+          "forbid": ["Solo puedo ayudar", "I can only help with hotel reservations"]
+        }
+      }
+    ]
   }
 ]

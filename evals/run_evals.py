@@ -48,9 +48,12 @@ def _check(expect: dict, reply: str, action: str | None, trace: dict) -> list[st
     return failures
 
 
-def run_case(case: dict, verbose: bool = False) -> tuple[bool, list[str]]:
+def run_case(case: dict, verbose: bool = False, provider_name: str = "mock") -> tuple[bool, list[str]]:
+    """`provider_name` defaults to "mock" (this gate's substrate, ADR-004);
+    evals/run_live_evals.py passes a real backend to run the same scenarios
+    and grading against the actual configured LLM."""
     reset_booking_backend()  # hermetic cases: confirmation sequence restarts per scenario
-    agent = Agent(make_provider("mock"))
+    agent = Agent(make_provider(provider_name))
     failures: list[str] = []
     for index, turn in enumerate(case["turns"], start=1):
         trace = TurnTrace(session_id=f"eval-{case['id']}", turn_id=f"turn-{index}")

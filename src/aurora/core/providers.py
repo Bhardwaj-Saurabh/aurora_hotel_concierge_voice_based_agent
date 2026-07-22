@@ -99,6 +99,12 @@ class Provider:
 
         # Per-stage overrides fall back to the preset.
         self.llm_model = _env_or_default("LLM_MODEL", p["llm_model"])
+        # Lowered from 0.3 (live debugging pass, 2026-07-22): measured 3/8
+        # off-topic-guardrail misfires at 0.3 on an indirect, non-English
+        # booking phrase ("a place to stay" rather than "a room"); 0/8 at
+        # 0.15 across the same batch. Tool-call classification benefits from
+        # determinism more than reply variety does.
+        self.llm_temperature = float(_env_or_default("LLM_TEMPERATURE", "0.15"))
         self.stt_model = _env_or_default("STT_MODEL", p["stt_model"])
         self.stt_prompt = _env_or_default("STT_PROMPT", DEFAULT_STT_PROMPT)
         self.tts_model = _env_or_default("TTS_MODEL", p["tts_model"])
@@ -121,7 +127,7 @@ class Provider:
             messages=messages,
             tools=tools or None,
             tool_choice=(tool_choice or "auto") if tools else None,
-            temperature=0.3,
+            temperature=self.llm_temperature,
         )
 
     def stream_chat(self, messages: list[dict], tools: list[dict] | None = None,
@@ -136,7 +142,7 @@ class Provider:
             messages=messages,
             tools=tools or None,
             tool_choice=(tool_choice or "auto") if tools else None,
-            temperature=0.3,
+            temperature=self.llm_temperature,
             stream=True,
         )
 
