@@ -62,6 +62,14 @@ def _token(identity: str, name: str, room: str) -> str:
 
 @router.get("/")
 def index():
+    """Public marketing site with the embedded voice/chat widget."""
+    return FileResponse(WEB_DIR / "site.html")
+
+
+@router.get("/console")
+def console():
+    """Internal ops console: the two-party LiveKit room demo + telemetry
+    timeline used for development and the workshop (formerly served at /)."""
     return FileResponse(WEB_DIR / "index.html")
 
 
